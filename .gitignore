@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Environment
+.env
+
+# Runtime data
+data/logs/
+data/outputs/
+data/projects/
+data/speakers.json
+data/refs/*/
+
+# Frontend build artifacts
+web/node_modules/
+web/dist/
+
+# OS
+Thumbs.db
+.DS_Store
