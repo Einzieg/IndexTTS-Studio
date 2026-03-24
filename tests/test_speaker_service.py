@@ -16,5 +16,5 @@ def test_speaker_service_lists_serializable_profiles(container: ServiceContainer
 
     assert [profile["name"] for profile in profiles] == ["主角A", "反派B", "旁白"]
     hero_profile = next(profile for profile in profiles if profile["name"] == "主角A")
-    assert hero_profile["ref_audio"].endswith("data\\refs\\hero_a.wav")
+    assert hero_profile["ref_audio"].replace("\\", "/").endswith("data/refs/hero_a.wav")
     assert hero_profile["options"]["temperature"] == 0.8
