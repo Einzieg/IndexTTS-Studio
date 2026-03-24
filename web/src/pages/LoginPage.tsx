@@ -84,9 +84,6 @@ export function LoginPage(props: LoginPageProps) {
             <div className="glass-card px-5 py-6 md:px-6 md:py-7">
               <div className="eyebrow">安全登录</div>
               <h2 className="mt-3 font-display text-3xl font-semibold text-ink">进入工作台</h2>
-              <p className="mt-2 text-sm leading-7 text-slate-600">
-                使用 `.env` 中配置的账号密码登录，继续当前项目和分集的配音工作。
-              </p>
 
               {props.error ? (
                 <div className="mt-5 rounded-[24px] border border-rose-100 bg-rose-50/90 px-4 py-3 text-sm font-medium text-rose-700">
@@ -129,10 +126,6 @@ export function LoginPage(props: LoginPageProps) {
                     />
                   </div>
                 </label>
-
-                <div className="rounded-[24px] border border-white/70 bg-slate-100/55 px-4 py-3 text-sm leading-7 text-slate-500 shadow-inner">
-                  登录凭据由服务端 `.env` 管理。开启远程协作时，建议同时配合反向代理或内网访问控制使用。
-                </div>
 
                 <button
                   className="action-button action-button-primary mt-2 w-full justify-center"
