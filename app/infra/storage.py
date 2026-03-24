@@ -86,6 +86,9 @@ class StorageService:
             encoding="utf-8",
         )
 
+    def read_json(self, path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def _make_jsonable(self, payload: Any) -> Any:
         if isinstance(payload, BaseModel):
             return payload.model_dump(mode="json")

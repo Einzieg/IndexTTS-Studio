@@ -67,7 +67,7 @@ export function ProjectsPage(props: {
       return;
     }
     setProjectForm(buildProjectForm(activeProject));
-  }, [activeProject, isCreating]);
+  }, [activeProject?.id, isCreating]);
 
   async function saveProject() {
     if (!projectForm.name.trim()) {
@@ -212,16 +212,13 @@ export function ProjectsPage(props: {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[320px,minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
       <aside className="glass-card p-5">
         <div className="eyebrow">项目管理</div>
         <div className="mt-4 flex items-center justify-between">
           <h2 className="font-display text-2xl font-semibold text-ink">项目列表</h2>
           <FolderPlus className="h-5 w-5 text-slate-500" />
         </div>
-        <p className="mt-2 text-sm leading-7 text-slate-600">
-          项目和分集都在这个独立页面管理。项目 ID 由系统自动生成，用于目录隔离和接口引用。
-        </p>
 
         <button
           className="action-button action-button-secondary mt-4 w-full justify-center"
@@ -234,7 +231,7 @@ export function ProjectsPage(props: {
 
         <div className="mt-4 space-y-3">
           {props.projects.length === 0 ? (
-            <EmptyState title="还没有项目" description="先创建一个项目，再继续配置分集、角色和文本配音。" />
+            <EmptyState title="还没有项目" />
           ) : (
             props.projects.map((project) => {
               const active = !isCreating && project.id === props.selectedProjectId;
@@ -266,17 +263,14 @@ export function ProjectsPage(props: {
         </div>
       </aside>
 
-      <section className="space-y-5">
+      <section className="space-y-4">
         <div className="glass-card p-5 md:p-6">
-          <div className="flex flex-col gap-3 border-b border-white/55 pb-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-col gap-3 border-b border-white/55 pb-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <div className="eyebrow">项目信息</div>
               <h2 className="mt-3 font-display text-2xl font-semibold text-ink">
                 {isCreating ? "创建新项目" : activeProject ? `编辑 ${activeProject.name}` : "选择一个项目"}
               </h2>
-              <p className="mt-2 text-sm leading-7 text-slate-600">
-                这里只需要填写项目名称和说明，项目 ID 会在保存时由系统自动生成。
-              </p>
             </div>
             <div className="flex flex-wrap gap-3">
               {activeProject && !isCreating ? (
@@ -310,7 +304,7 @@ export function ProjectsPage(props: {
             </div>
           </div>
 
-          <div className="mt-5 space-y-4">
+          <div className="mt-4 space-y-4">
             <FieldLabel label="项目名称">
               <input
                 className="field-shell w-full"
@@ -334,7 +328,7 @@ export function ProjectsPage(props: {
             </FieldLabel>
 
             {!isCreating && activeProject ? (
-              <div className="rounded-[24px] border border-white/70 bg-slate-100/55 px-4 py-4 text-sm text-slate-600">
+              <div className="rounded-[24px] border border-white/70 bg-slate-100/55 px-4 py-3 text-sm text-slate-600">
                 当前项目 ID：<span className="font-semibold text-slate-800">{activeProject.id}</span>
               </div>
             ) : null}
@@ -342,13 +336,10 @@ export function ProjectsPage(props: {
         </div>
 
         <div className="glass-card p-5 md:p-6">
-          <div className="flex flex-col gap-3 border-b border-white/55 pb-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-col gap-3 border-b border-white/55 pb-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <div className="eyebrow">分集管理</div>
               <h2 className="mt-3 font-display text-2xl font-semibold text-ink">项目分集</h2>
-              <p className="mt-2 text-sm leading-7 text-slate-600">
-                每个分集会拥有独立的台词草稿和输出目录，顶部导航栏会显示当前选择的分集。
-              </p>
             </div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/72 px-4 py-2 text-sm text-slate-600">
               <Layers3 className="h-4 w-4" />
@@ -358,7 +349,7 @@ export function ProjectsPage(props: {
 
           {activeProject ? (
             <>
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <FieldLabel label="分集名称">
                   <input
                     className="field-shell w-full"
@@ -395,9 +386,9 @@ export function ProjectsPage(props: {
                 保存分集
               </button>
 
-              <div className="mt-5 space-y-3">
+              <div className="mt-4 space-y-3">
                 {activeProject.episodes.length === 0 ? (
-                  <EmptyState title="当前项目还没有分集" description="先添加一个分集，文本配音页才会按分集维护台词。" />
+                  <EmptyState title="当前项目还没有分集" />
                 ) : (
                   activeProject.episodes.map((episode) => (
                     <div
@@ -430,8 +421,8 @@ export function ProjectsPage(props: {
               </div>
             </>
           ) : (
-            <div className="mt-5">
-              <EmptyState title="请先选择项目" description="先在左侧选中一个项目，或新建项目后再添加分集。" />
+            <div className="mt-4">
+              <EmptyState title="请先选择项目" />
             </div>
           )}
         </div>

@@ -1,0 +1,74 @@
+services:
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: indextts-studio:local
+    container_name: indextts-studio
+    env_file:
+      - .env
+    environment:
+      INDEXTTS_STUDIO_ROOT: /app
+      INDEXTTS_STUDIO_HOST: ${INDEXTTS_STUDIO_DOCKER_HOST:-0.0.0.0}
+      INDEXTTS_STUDIO_PORT: ${INDEXTTS_STUDIO_DOCKER_PORT:-8000}
+      INDEXTTS_STUDIO_DATA_DIR: /app/data
+      INDEXTTS_STUDIO_WARMUP_ON_STARTUP: ${INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP:-false}
+      INDEXTTS_STUDIO_GRADIO_BASE_URL: ${INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL:-http://index-tts:7861}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      index-tts:
+        condition: service_healthy
+    networks:
+      - indextts-net
+    restart: unless-stopped
+
+  index-tts:
+    build:
+      context: .
+      dockerfile: docker/index-tts/Dockerfile
+      args:
+        INDEXTTS_CUDA_BASE_IMAGE: ${INDEXTTS_CUDA_BASE_IMAGE:-nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04}
+        INDEXTTS_UPSTREAM_REPO: ${INDEXTTS_UPSTREAM_REPO:-https://github.com/index-tts/index-tts.git}
+        INDEXTTS_UPSTREAM_REF: ${INDEXTTS_UPSTREAM_REF:-main}
+    image: indextts-upstream:local
+    container_name: index-tts
+    env_file:
+      - .env
+    gpus: all
+    expose:
+      - "7861"
+    environment:
+      INDEXTTS_MODEL_DIR: /opt/index-tts/checkpoints
+      INDEXTTS_WEBUI_HOST: 0.0.0.0
+      INDEXTTS_WEBUI_PORT: 7861
+      NVIDIA_VISIBLE_DEVICES: ${INDEXTTS_NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${INDEXTTS_NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    volumes:
+      - index-tts-models:/opt/index-tts/checkpoints
+      - index-tts-hf-cache:/root/.cache/huggingface
+      - index-tts-ms-cache:/root/.cache/modelscope
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://127.0.0.1:7861/ > /dev/null || pgrep -f 'index-tts-bootstrap-models.py' > /dev/null || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    networks:
+      - indextts-net
+    restart: unless-stopped
+
+networks:
+  indextts-net:
+    name: indextts-studio-net
+
+volumes:
+  index-tts-models:
+  index-tts-hf-cache:
+  index-tts-ms-cache:

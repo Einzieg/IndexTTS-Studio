@@ -184,6 +184,8 @@ class JobRecord(BaseModel):
     ] = "queued"
     script_path: Path
     output_dir: Path
+    project_id: str | None = None
+    episode_id: str | None = None
     skip_existing: bool = True
     continue_on_error: bool = True
     force: bool = False

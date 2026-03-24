@@ -11,16 +11,19 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.responses import api_response
 from app.api.routes_audio import router as audio_router
+from app.api.routes_auth import router as auth_router
 from app.api.routes_files import router as files_router
 from app.api.routes_jobs import router as jobs_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_scripts import router as scripts_router
 from app.api.routes_speakers import router as speakers_router
 from app.api.routes_tts import router as tts_router
+from app.core.auth import session_from_request
 from app.core.config import get_settings
 from app.core.container import ServiceContainer, build_container
 from app.core.exceptions import StudioError
@@ -35,7 +38,7 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logger.info("Starting IndexTTS-Studio API.")
-        active_container.initialize()
+        active_container.initialize(resume_jobs=True)
         yield
         active_container.shutdown()
         logger.info("Stopping IndexTTS-Studio API.")
@@ -43,10 +46,30 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
     app = FastAPI(
         title="IndexTTS-Studio",
         version="0.1.0",
-        description="基于 IndexTTS2 的本地多角色配音工作台。",
+        description="基于 IndexTTS2 的多角色配音工作台。",
         lifespan=lifespan,
     )
     app.state.container = active_container
+
+    @app.middleware("http")
+    async def auth_guard(request: Request, call_next):
+        auth_settings = active_container.settings.auth
+        if (
+            not auth_settings.enabled
+            or request.method == "OPTIONS"
+            or _is_public_path(request.url.path)
+        ):
+            return await call_next(request)
+
+        session = session_from_request(request, auth_settings)
+        if session is None:
+            return JSONResponse(
+                status_code=401,
+                content=api_response(success=False, message="请先登录。"),
+            )
+
+        request.state.auth_session = session
+        return await call_next(request)
 
     @app.exception_handler(StudioError)
     async def handle_studio_error(_: Request, exc: StudioError) -> JSONResponse:
@@ -72,6 +95,11 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
             data=HealthStatus(),
         )
 
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        return RedirectResponse(url="/ui", status_code=307)
+
+    app.include_router(auth_router)
     app.include_router(speakers_router)
     app.include_router(projects_router)
     app.include_router(scripts_router)
@@ -89,16 +117,18 @@ def run(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     settings = get_settings()
     container = build_container(settings)
-    container.initialize()
 
     try:
         if args.command == "serve":
+            container.initialize(resume_jobs=True)
             uvicorn.run(
                 create_app(container),
                 host=args.host,
                 port=args.port,
             )
             return
+
+        container.initialize()
 
         if args.command == "single":
             result = container.tts_service.synthesize_single(
@@ -235,6 +265,12 @@ def _configure_web_ui(app: FastAPI, dist_path: Path) -> None:
             </html>
             """
         )
+
+
+def _is_public_path(path: str) -> bool:
+    if path in {"/", "/health"}:
+        return True
+    return path.startswith("/ui") or path.startswith("/auth")
 
 
 app = create_app()

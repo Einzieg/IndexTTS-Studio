@@ -211,22 +211,19 @@ export function RolesPage(props: {
   if (!props.project) {
     return (
       <div className="glass-card p-5 md:p-6">
-        <EmptyState title="请先选择项目" description="先到项目配置页创建或选择一个项目，角色才会按项目独立管理。" />
+        <EmptyState title="请先选择项目" />
       </div>
     );
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[320px,minmax(0,1fr)]">
+    <div className="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr)]">
       <aside className="glass-card p-5">
         <div className="eyebrow">项目角色</div>
         <div className="mt-4 flex items-center justify-between">
           <h2 className="font-display text-2xl font-semibold text-ink">角色列表</h2>
           <BadgeCheck className="h-5 w-5 text-slate-500" />
         </div>
-        <p className="mt-2 text-sm leading-7 text-slate-600">
-          当前页面只显示顶部导航栏所选项目下的角色。不同项目之间的参考音频和默认参数互不影响。
-        </p>
 
         <button
           className="action-button action-button-secondary mt-4 w-full justify-center"
@@ -239,7 +236,7 @@ export function RolesPage(props: {
 
         <div className="mt-4 space-y-3">
           {props.speakers.length === 0 ? (
-            <EmptyState title="当前项目还没有角色" description="先创建一个角色并上传参考音频，文本配音页才能使用它。" />
+            <EmptyState title="当前项目还没有角色" />
           ) : (
             props.speakers.map((speaker) => {
               const active = !isCreating && speaker.name === activeSpeakerName;
@@ -269,15 +266,12 @@ export function RolesPage(props: {
       </aside>
 
       <section className="glass-card p-5 md:p-6">
-        <div className="flex flex-col gap-3 border-b border-white/55 pb-5 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-col gap-3 border-b border-white/55 pb-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <div className="eyebrow">角色编辑器</div>
             <h2 className="mt-3 font-display text-2xl font-semibold text-ink">
               {activeSpeaker ? `编辑 ${activeSpeaker.name}` : "创建新角色"}
             </h2>
-            <p className="mt-2 text-sm leading-7 text-slate-600">
-              当前角色会保存到所选项目的独立目录里，只供该项目的文本配音使用。
-            </p>
           </div>
           <div className="flex flex-wrap gap-3">
             {activeSpeaker ? (
@@ -311,8 +305,8 @@ export function RolesPage(props: {
           </div>
         </div>
 
-        <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr),340px]">
-          <div className="space-y-5">
+        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr),340px]">
+          <div className="space-y-4">
             <div className="rounded-[30px] border border-white/70 bg-slate-100/55 p-4 shadow-inner">
               <div className="eyebrow">基础信息</div>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -336,7 +330,7 @@ export function RolesPage(props: {
                 </FieldLabel>
               </div>
               <p className="mt-3 text-xs leading-6 text-slate-500">
-                新建角色必须上传参考音频；编辑时如果不重新上传，就会继续沿用已有音频。
+                新建时需上传；编辑时不上传则沿用现有音频。
               </p>
             </div>
 
@@ -407,17 +401,9 @@ export function RolesPage(props: {
           <div className="space-y-4">
             <AudioCard
               title="参考音频预览"
-              description={
-                selectedFile
-                  ? `待上传文件：${selectedFile.name}`
-                  : "当前角色的参考音频会显示在这里，方便你确认项目内使用的是哪一份声音样本。"
-              }
+              description={selectedFile ? `待上传：${selectedFile.name}` : undefined}
               path={activeSpeaker?.ref_audio}
-              secondary={
-                activeSpeaker
-                  ? "修改并保存后，新的默认参数会立刻用于这个项目中的文本配音。"
-                  : "创建角色后，这里会显示已经保存成功的参考音频。"
-              }
+              secondary={activeSpeaker?.ref_audio ? undefined : "保存后可在这里试听"}
             />
           </div>
         </div>

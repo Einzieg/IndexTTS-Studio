@@ -28,14 +28,21 @@ class ServiceContainer:
     audio_service: AudioService
     adapter: TTSAdapter
     initialized: bool = False
+    jobs_initialized: bool = False
 
-    def initialize(self) -> None:
+    def initialize(self, *, resume_jobs: bool = False) -> None:
         if self.initialized:
+            if resume_jobs and not self.jobs_initialized:
+                self.job_service.initialize()
+                self.jobs_initialized = True
             return
         self.settings.ensure_runtime_dirs()
         logger = get_logger("indextts_studio")
         logger.info("Loaded runtime configuration from %s", self.settings.env_file)
         logger.info("Runtime directories prepared under %s", self.settings.paths.data_dir)
+        if resume_jobs:
+            self.job_service.initialize()
+            self.jobs_initialized = True
         if self.settings.model.warmup_on_startup:
             logger.info(
                 "Warming up TTS backend `%s` during startup.",

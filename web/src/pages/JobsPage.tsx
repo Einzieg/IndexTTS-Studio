@@ -35,20 +35,17 @@ export function JobsPage(props: {
   );
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[320px,minmax(0,1fr),360px]">
+    <div className="grid gap-4 xl:grid-cols-[320px,minmax(0,1fr),360px]">
       <aside className="glass-card p-5">
         <div className="eyebrow">异步队列</div>
         <div className="mt-4 flex items-center justify-between">
           <h2 className="font-display text-2xl font-semibold text-ink">任务列表</h2>
           <Layers3 className="h-5 w-5 text-slate-500" />
         </div>
-        <p className="mt-2 text-sm leading-7 text-slate-600">
-          页面脚本和其他批量任务都会汇总在这里，方便你持续轮询进度。
-        </p>
 
         <div className="mt-4 space-y-3">
           {props.jobs.length === 0 ? (
-            <EmptyState title="还没有任务" description="去文本配音页提交一次页面脚本任务，这里就会开始显示处理状态。" />
+            <EmptyState title="还没有任务" />
           ) : (
             props.jobs.map((job) => {
               const active = job.job_id === props.selectedJobId;
@@ -98,13 +95,10 @@ export function JobsPage(props: {
             <FileAudio2 className="h-5 w-5 text-slate-500" />
           )}
         </div>
-        <p className="mt-2 text-sm leading-7 text-slate-600">
-          点击某个任务后，这里会展示逐句输出、错误信息和音频时长。
-        </p>
 
-        <div className="scroll-panel mt-5 max-h-[780px] space-y-3 overflow-auto pr-1">
+        <div className="scroll-panel mt-4 max-h-[780px] space-y-3 overflow-auto pr-1">
           {props.jobLines.length === 0 ? (
-            <EmptyState title="还没有逐句结果" description="先从左侧选择一个任务，就能查看每一句的生成状态。" />
+            <EmptyState title="还没有逐句结果" />
           ) : (
             props.jobLines.map((line) => {
               const active = line.line_id === selectedLineId;
@@ -161,7 +155,7 @@ export function JobsPage(props: {
               description={
                 selectedJobLine
                   ? `${selectedJobLine.speaker}，${formatDuration(selectedJobLine.duration_ms)}`
-                  : "选中一条任务句子后，可以在这里直接试听输出。"
+                  : undefined
               }
               path={selectedJobLine?.output_path}
               secondary={selectedJobLine?.text}
@@ -171,7 +165,7 @@ export function JobsPage(props: {
               description={
                 props.singleResult
                   ? `${props.singleResult.speaker}，${formatDuration(props.singleResult.duration_ms)}`
-                  : "最近一次单句试听结果会显示在这里。"
+                  : undefined
               }
               path={props.singleResult?.output_path}
               secondary={props.singleResult?.text}

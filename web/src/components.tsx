@@ -47,7 +47,7 @@ export function ToggleTile(props: {
 
 export function AudioCard(props: {
   title: string;
-  description: string;
+  description?: string;
   path?: string | null;
   secondary?: string;
 }) {
@@ -56,7 +56,9 @@ export function AudioCard(props: {
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-slate-700">{props.title}</div>
-          <div className="mt-1 text-sm text-slate-500">{props.description}</div>
+          {props.description ? (
+            <div className="mt-1 text-sm text-slate-500">{props.description}</div>
+          ) : null}
         </div>
         <AudioWaveform className="mt-1 h-4 w-4 text-slate-400" />
       </div>
@@ -80,11 +82,11 @@ export function AudioCard(props: {
 }
 
 
-export function EmptyState(props: { title: string; description: string }) {
+export function EmptyState(props: { title: string; description?: string }) {
   return (
-    <div className="rounded-[24px] border border-dashed border-slate-200/90 bg-white/50 px-4 py-6 text-sm text-slate-500">
+    <div className="rounded-[24px] border border-dashed border-slate-200/90 bg-white/50 px-4 py-5 text-sm text-slate-500">
       <div className="font-semibold text-slate-600">{props.title}</div>
-      <div className="mt-2 leading-7">{props.description}</div>
+      {props.description ? <div className="mt-2 leading-7">{props.description}</div> : null}
     </div>
   );
 }

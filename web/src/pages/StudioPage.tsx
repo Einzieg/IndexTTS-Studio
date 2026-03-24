@@ -997,9 +997,6 @@ export function StudioPage(props: {
                     <h3 className="mt-3 font-display text-2xl font-semibold text-ink">
                       {activeConfigRow.speaker || "未选择角色"} 的详细参数
                     </h3>
-                    <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-600">
-                      这里的配置只作用于当前行。你可以直接单行生成、试听多个版本，并选择最终采用的配音。
-                    </p>
                   </div>
                   <button
                     className="shrink-0 rounded-full border border-white/70 bg-white/70 p-2 text-slate-500 transition hover:text-slate-800"
@@ -1102,7 +1099,7 @@ export function StudioPage(props: {
                       </div>
                       {activeRenderList.length === 0 ? (
                         <div className="mt-4">
-                          <EmptyState title="还没有版本" description="先点击“生成并试听”，这里就会出现可以切换和试听的配音版本。" />
+                          <EmptyState title="还没有版本" />
                         </div>
                       ) : (
                         <div className="mt-4 space-y-3">
@@ -1155,16 +1152,16 @@ export function StudioPage(props: {
                       description={
                         activeSelectedRender
                           ? `${activeConfigRow.speaker} · ${formatDuration(activeSelectedRender.durationMs)}`
-                          : "生成或选择一个版本后，这里会显示当前行正在使用的配音。"
+                          : undefined
                       }
                       path={activeSelectedRender?.outputPath}
-                      secondary={activeConfigRow.text || "请先在表格里输入台词内容。"}
+                      secondary={activeConfigRow.text || undefined}
                     />
 
                     <div className="rounded-[28px] border border-white/70 bg-white/72 p-4 text-sm text-slate-600">
                       <div className="eyebrow">当前台词</div>
                       <div className="mt-3 rounded-[22px] border border-slate-200 bg-slate-100/70 px-4 py-4 leading-7 text-slate-700">
-                        {activeConfigRow.text || "请先在表格里输入台词内容。"}
+                        {activeConfigRow.text || "未填写台词"}
                       </div>
                     </div>
                   </div>
@@ -1179,7 +1176,7 @@ export function StudioPage(props: {
   if (!props.project) {
     return (
       <div className="glass-card p-5 md:p-6">
-        <EmptyState title="请先选择项目" description="先到项目配置页创建或选择一个项目，然后再按分集维护文本配音列表。" />
+        <EmptyState title="请先选择项目" />
       </div>
     );
   }
@@ -1187,7 +1184,7 @@ export function StudioPage(props: {
   if (episodeOptions.length === 0) {
     return (
       <div className="glass-card p-5 md:p-6">
-        <EmptyState title="当前项目还没有分集" description="先到项目配置页为当前项目添加分集，文本配音页才会按分集展示台词列表。" />
+        <EmptyState title="当前项目还没有分集" />
       </div>
     );
   }
@@ -1195,7 +1192,7 @@ export function StudioPage(props: {
   if (!props.activeEpisodeId) {
     return (
       <div className="glass-card p-5 md:p-6">
-        <EmptyState title="请先选择分集" description="从顶部导航栏里选择当前分集后，这里会加载对应的文本配音工作台。" />
+        <EmptyState title="请先选择分集" />
       </div>
     );
   }
@@ -1203,7 +1200,7 @@ export function StudioPage(props: {
   if (isRowsLoading) {
     return (
       <div className="glass-card p-5 md:p-6">
-        <EmptyState title="正在加载表格" description="正在从项目分集的持久化数据中读取文本配音列表，请稍候。" />
+        <EmptyState title="正在加载表格" />
       </div>
     );
   }
@@ -1212,20 +1209,18 @@ export function StudioPage(props: {
     <>
       <div>
         <section className="glass-card p-5 md:p-6">
-          <div className="flex flex-col gap-4 border-b border-white/55 pb-5 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-col gap-4 border-b border-white/55 pb-4 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <div className="eyebrow">文本配音工作台</div>
               <h2 className="mt-3 font-display text-2xl font-semibold text-ink">表格工作台</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-600">
-                当前页面的台词表会按“项目 + 分集”独立保存。分集选择放在顶部导航栏里，这里只保留台词编排、试听和生成操作。
-              </p>
             </div>
 
             <div className="flex flex-wrap gap-3">
               <button className="action-button action-button-secondary" onClick={addRow} type="button">
                 <Plus className="h-4 w-4" />
                 新增一行
-              </button>              <button
+              </button>
+              <button
                 className="action-button action-button-ghost"
                 disabled={isExporting || exportableRowCount === 0}
                 onClick={() => void exportCurrentEpisode()}
@@ -1268,14 +1263,9 @@ export function StudioPage(props: {
             </div>
           </div>
 
-          <div className="mt-5 rounded-[30px] border border-white/70 bg-slate-100/55 p-4 shadow-inner">
+          <div className="mt-4 rounded-[30px] border border-white/70 bg-slate-100/55 p-4 shadow-inner">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <div className="text-sm font-semibold text-slate-700">已有配音处理策略</div>
-                <div className="mt-2 text-sm text-slate-500">
-                  如果某一行已经选定过配音，可以选择直接跳过，或者生成新版本并把最新结果设为当前配音。
-                </div>
-              </div>
+              <div className="text-sm font-semibold text-slate-700">已有配音处理</div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <button
                   className={`rounded-[22px] border px-4 py-3 text-left text-sm transition-all ${
@@ -1287,9 +1277,6 @@ export function StudioPage(props: {
                   type="button"
                 >
                   <div className="font-semibold">已有配音时跳过</div>
-                  <div className={`mt-1 text-xs ${existingBehavior === "skip" ? "text-white/70" : "text-slate-500"}`}>
-                    适合只补齐还没生成的台词。
-                  </div>
                 </button>
                 <button
                   className={`rounded-[22px] border px-4 py-3 text-left text-sm transition-all ${
@@ -1301,20 +1288,17 @@ export function StudioPage(props: {
                   type="button"
                 >
                   <div className="font-semibold">已有配音时生成新版本</div>
-                  <div className={`mt-1 text-xs ${existingBehavior === "overwrite" ? "text-white/70" : "text-slate-500"}`}>
-                    新生成的结果会自动设为当前配音。
-                  </div>
                 </button>
               </div>
             </div>
           </div>
 
           {speakerNames.length === 0 ? (
-            <div className="mt-5">
-              <EmptyState title="当前项目还没有角色" description="先到角色管理页为当前项目创建角色，文本表格才能开始指定说话人。" />
+            <div className="mt-4">
+              <EmptyState title="当前项目还没有角色" />
             </div>
           ) : (
-            <div className="mt-5 overflow-hidden rounded-[30px] border border-white/70 bg-white/70">
+            <div className="mt-4 overflow-hidden rounded-[30px] border border-white/70 bg-white/70">
               <div className="overflow-x-auto">
                 <table className="min-w-full text-left text-sm text-slate-700">
                   <thead className="bg-slate-100/80 text-xs uppercase tracking-[0.18em] text-slate-500">

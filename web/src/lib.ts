@@ -1,10 +1,29 @@
 import type { ApiEnvelope, GenerationOptions, Tone } from "./types";
 
+export const AUTH_REQUIRED_EVENT = "indextts-studio:auth-required";
+
+export class UnauthorizedError extends Error {}
+
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
-  const payload = (await response.json()) as ApiEnvelope<T>;
-  if (!response.ok || !payload.success) {
-    throw new Error(payload.message || `请求失败：${path}`);
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    ...init,
+  });
+
+  let payload: ApiEnvelope<T> | null = null;
+  try {
+    payload = (await response.json()) as ApiEnvelope<T>;
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 401) {
+    window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
+    throw new UnauthorizedError(payload?.message || "登录已失效，请重新登录。");
+  }
+
+  if (!response.ok || !payload?.success) {
+    throw new Error(payload?.message || `请求失败：${path}`);
   }
   return payload.data;
 }

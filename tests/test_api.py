@@ -8,6 +8,10 @@ from app.main import create_app
 
 def test_api_endpoints(container: ServiceContainer) -> None:
     with TestClient(create_app(container)) as client:
+        root_response = client.get("/", follow_redirects=False)
+        assert root_response.status_code == 307
+        assert root_response.headers["location"] == "/ui"
+
         health_response = client.get("/health")
         assert health_response.status_code == 200
         assert health_response.json()["data"]["status"] == "ok"

@@ -33,6 +33,12 @@ export type HealthPayload = {
   status: string;
 };
 
+export type AuthSessionPayload = {
+  enabled: boolean;
+  authenticated: boolean;
+  username?: string | null;
+};
+
 export type SpeakerProfile = {
   name: string;
   ref_audio: string;

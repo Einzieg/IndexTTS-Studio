@@ -21,6 +21,10 @@ class ConflictError(StudioError):
     status_code = 409
 
 
+class AuthenticationError(StudioError):
+    status_code = 401
+
+
 class InfrastructureError(StudioError):
     status_code = 500
 

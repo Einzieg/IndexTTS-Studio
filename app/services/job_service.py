@@ -53,11 +53,27 @@ class JobService:
         self.script_service = script_service
         self.tts_service = tts_service
         self.logger = get_logger("indextts_studio.jobs")
+        self._jobs_dir = self.storage.settings.paths.jobs_dir
         self._jobs: dict[str, JobRecord] = {}
         self._queue: queue.Queue[_QueuedBatchJob | None] = queue.Queue()
         self._jobs_lock = threading.RLock()
         self._worker_thread: threading.Thread | None = None
         self._shutdown_event = threading.Event()
+        self._initialized = False
+
+    def initialize(self) -> None:
+        with self._jobs_lock:
+            if self._initialized:
+                return
+            loaded_job_ids = self._load_persisted_jobs_locked()
+            resumable_tasks = self._restore_resumable_tasks_locked(loaded_job_ids)
+            self._initialized = True
+
+        if resumable_tasks:
+            self._ensure_worker_started()
+            for task in resumable_tasks:
+                self._queue.put(task)
+            self.logger.info("Recovered %s queued job(s) from disk.", len(resumable_tasks))
 
     def run_batch(
         self,
@@ -108,6 +124,8 @@ class JobService:
             job_id=job_id,
             script_path=resolved_script_path,
             output_dir=output_dir,
+            project_id=project_id,
+            episode_id=episode_id,
             skip_existing=skip_existing,
             continue_on_error=continue_on_error,
             force=force,
@@ -128,6 +146,7 @@ class JobService:
         )
         with self._jobs_lock:
             self._jobs[job_id] = record
+            self._persist_job_locked(record)
         self._ensure_worker_started()
         self._queue.put(
             _QueuedBatchJob(
@@ -315,6 +334,9 @@ class JobService:
             task.job_id,
             status="running",
             started_at=_utc_now(),
+            completed_at=None,
+            stopped_early=False,
+            report=None,
         )
         self.logger.info("Running async batch job %s", task.job_id)
         report = self._execute_batch(
@@ -335,19 +357,26 @@ class JobService:
                 task.job_id, line.id, failure
             ),
         )
+        current_record = self.get_job(task.job_id)
         final_status = "completed"
         if report.stopped_early:
             final_status = "failed"
-        elif report.failed > 0:
+        elif current_record.failed > 0:
             final_status = "completed_with_errors"
+        aggregate_report = self._build_report_from_record(
+            current_record,
+            stopped_early=report.stopped_early,
+        )
 
         self._update_job(
             task.job_id,
             status=final_status,
-            report=report,
+            report=aggregate_report,
             stopped_early=report.stopped_early,
             completed_at=_utc_now(),
         )
+        self.storage.write_json(task.output_dir / "failed_lines.json", aggregate_report.failures)
+        self.storage.write_json(task.output_dir / "batch_report.json", aggregate_report)
         self.logger.info(
             "Completed async batch job %s with status %s",
             task.job_id,
@@ -374,6 +403,10 @@ class JobService:
                     pending_line.updated_at = now
                     pending_line.completed_at = now
             self._refresh_job_counts(record)
+            record.report = self._build_report_from_record(record, stopped_early=True)
+            self._persist_job_locked(record)
+            self.storage.write_json(record.output_dir / "failed_lines.json", record.report.failures)
+            self.storage.write_json(record.output_dir / "batch_report.json", record.report)
 
     def _mark_line_running(self, job_id: str, line_id: str, output_path: Path) -> None:
         now = _utc_now()
@@ -386,6 +419,7 @@ class JobService:
             line.started_at = now
             line.updated_at = now
             self._refresh_job_counts(record)
+            self._persist_job_locked(record)
 
     def _mark_line_result(self, job_id: str, line_id: str, result: SynthesisResult) -> None:
         now = _utc_now()
@@ -399,6 +433,7 @@ class JobService:
             line.updated_at = now
             line.completed_at = now
             self._refresh_job_counts(record)
+            self._persist_job_locked(record)
 
     def _mark_line_failure(self, job_id: str, line_id: str, failure: BatchFailure) -> None:
         now = _utc_now()
@@ -410,6 +445,7 @@ class JobService:
             line.updated_at = now
             line.completed_at = now
             self._refresh_job_counts(record)
+            self._persist_job_locked(record)
 
     def _update_job(self, job_id: str, **updates: object) -> None:
         with self._jobs_lock:
@@ -417,6 +453,7 @@ class JobService:
             for key, value in updates.items():
                 setattr(record, key, value)
             self._refresh_job_counts(record)
+            self._persist_job_locked(record)
 
     def _refresh_job_counts(self, record: JobRecord) -> None:
         record.done = sum(line.status == "done" for line in record.lines)
@@ -453,6 +490,127 @@ class JobService:
             text=line.text,
             error_message=message,
             timestamp=_utc_now(),
+        )
+
+    @staticmethod
+    def _build_report_from_record(record: JobRecord, *, stopped_early: bool) -> BatchReport:
+        failures = [
+            BatchFailure(
+                line_id=line.line_id,
+                speaker=line.speaker,
+                text=line.text,
+                error_message=line.error or "Unknown job failure.",
+                timestamp=line.completed_at or line.updated_at,
+            )
+            for line in record.lines
+            if line.status == "failed"
+        ]
+        return BatchReport(
+            success=not stopped_early,
+            stopped_early=stopped_early,
+            script_path=record.script_path,
+            output_dir=record.output_dir,
+            total=record.total,
+            done=record.done,
+            skipped=record.skipped,
+            failed=record.failed,
+            failed_ids=list(record.failed_ids),
+            failures=failures,
+        )
+
+    def _job_record_path(self, job_id: str) -> Path:
+        return self._jobs_dir / f"{job_id}.json"
+
+    def _persist_job_locked(self, record: JobRecord) -> None:
+        self.storage.write_json(self._job_record_path(record.job_id), record)
+
+    def _load_persisted_jobs_locked(self) -> set[str]:
+        self._jobs_dir.mkdir(parents=True, exist_ok=True)
+        loaded_job_ids: set[str] = set()
+        for path in sorted(self._jobs_dir.glob("*.json")):
+            try:
+                record = JobRecord.model_validate(self.storage.read_json(path))
+            except Exception as exc:  # pragma: no cover - defensive corrupted file guard
+                self.logger.warning("Skipping invalid job record %s: %s", path, exc)
+                continue
+            if record.job_id not in self._jobs:
+                self._jobs[record.job_id] = record
+                loaded_job_ids.add(record.job_id)
+        return loaded_job_ids
+
+    def _restore_resumable_tasks_locked(self, loaded_job_ids: set[str]) -> list[_QueuedBatchJob]:
+        tasks: list[_QueuedBatchJob] = []
+        queued_statuses = {"queued", "running"}
+        resumable_jobs = [
+            record
+            for record in self._jobs.values()
+            if record.job_id in loaded_job_ids and record.status in queued_statuses
+        ]
+        resumable_jobs.sort(key=lambda item: item.created_at)
+
+        for record in resumable_jobs:
+            now = _utc_now()
+            if record.status == "running":
+                for line in record.lines:
+                    if line.status == "running":
+                        line.status = "pending"
+                        line.output_path = None
+                        line.duration_ms = 0
+                        line.error = None
+                        line.started_at = None
+                        line.completed_at = None
+                        line.updated_at = now
+
+            record.status = "queued"
+            record.started_at = None
+            record.completed_at = None
+            record.stopped_early = False
+            record.report = None
+            self._refresh_job_counts(record)
+
+            pending_lines = [
+                line
+                for line in record.lines
+                if line.status == "pending"
+            ]
+
+            if not pending_lines:
+                if record.failed > 0:
+                    record.status = "completed_with_errors"
+                else:
+                    record.status = "completed"
+                record.completed_at = now
+                record.report = self._build_report_from_record(record, stopped_early=False)
+                self._persist_job_locked(record)
+                continue
+
+            self._persist_job_locked(record)
+            tasks.append(
+                _QueuedBatchJob(
+                    job_id=record.job_id,
+                    script_path=record.script_path,
+                    output_dir=record.output_dir,
+                    project_id=record.project_id,
+                    lines=[self._to_script_line(item) for item in pending_lines],
+                    skip_existing=record.skip_existing,
+                    continue_on_error=record.continue_on_error,
+                    force=record.force,
+                )
+            )
+
+        return tasks
+
+    @staticmethod
+    def _to_script_line(line: JobLineRecord) -> ScriptLine:
+        return ScriptLine(
+            id=line.line_id,
+            scene=line.scene,
+            speaker=line.speaker,
+            text=line.text,
+            output_name=line.output_name,
+            override=line.override,
+            start_ms=line.start_ms,
+            end_ms=line.end_ms,
         )
 
     def _resolve_output_dir(

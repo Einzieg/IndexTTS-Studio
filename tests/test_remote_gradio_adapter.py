@@ -30,13 +30,34 @@ def _make_wav_bytes() -> bytes:
 class _FakeGradioHandler(BaseHTTPRequestHandler):
     response_wav = _make_wav_bytes()
     last_payload: dict[str, Any] | None = None
+    upload_count = 0
+    uploaded_paths: list[str] = []
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/config":
             self._send_json({"api_prefix": "/gradio_api"})
             return
         if self.path == "/gradio_api/info":
-            self._send_json({"named_endpoints": {"/gen_single": {}}})
+            self._send_json(
+                {
+                    "named_endpoints": {
+                        "/gen_single": {
+                            "parameters": [
+                                {
+                                    "parameter_name": "emo_control_method",
+                                    "type": {
+                                        "enum": [
+                                            "Same as the voice reference",
+                                            "Use emotion reference audio",
+                                            "Use emotion vectors",
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                }
+            )
             return
         if self.path == "/gradio_api/call/gen_single/event-1":
             payload = [
@@ -71,7 +92,10 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
 
         if self.path == "/gradio_api/upload":
-            self._send_json(["/tmp/gradio/ref.wav"])
+            _FakeGradioHandler.upload_count += 1
+            uploaded_path = f"/tmp/gradio/ref-{_FakeGradioHandler.upload_count}.wav"
+            _FakeGradioHandler.uploaded_paths.append(uploaded_path)
+            self._send_json([uploaded_path])
             return
 
         if self.path == "/gradio_api/call/gen_single":
@@ -93,10 +117,17 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _reset_fake_server_state() -> None:
+    _FakeGradioHandler.last_payload = None
+    _FakeGradioHandler.upload_count = 0
+    _FakeGradioHandler.uploaded_paths = []
+
+
 def test_remote_gradio_adapter_downloads_output(
     studio_settings: AppSettings,
     studio_root: Path,
 ) -> None:
+    _reset_fake_server_state()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -109,7 +140,7 @@ def test_remote_gradio_adapter_downloads_output(
         output_path = studio_root / "data" / "outputs" / "remote_test.wav"
         result = adapter.synthesize(
             ref_audio=studio_root / "data" / "refs" / "hero_a.wav",
-            text="远程适配器测试。",
+            text="remote adapter test",
             output_path=output_path,
             options={
                 "temperature": 0.8,
@@ -130,7 +161,54 @@ def test_remote_gradio_adapter_downloads_output(
         payload = _FakeGradioHandler.last_payload
         assert payload is not None
         assert len(payload["data"]) == 24
-        assert payload["data"][2] == "远程适配器测试。"
+        assert payload["data"][0] == "Same as the voice reference"
+        assert isinstance(payload["data"][1], dict)
+        assert payload["data"][1]["meta"]["_type"] == "gradio.FileData"
+        assert payload["data"][1]["path"] == "/tmp/gradio/ref-1.wav"
+        assert payload["data"][2] == "remote adapter test"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_gradio_adapter_reuploads_reference_audio_for_each_request(
+    studio_settings: AppSettings,
+    studio_root: Path,
+) -> None:
+    _reset_fake_server_state()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        studio_settings.model.backend = "remote_gradio"
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        adapter = RemoteGradioAdapter(studio_settings)
+        adapter.warmup()
+
+        ref_audio = studio_root / "data" / "refs" / "hero_a.wav"
+        adapter.synthesize(
+            ref_audio=ref_audio,
+            text="first request",
+            output_path=studio_root / "data" / "outputs" / "remote_test_first.wav",
+            options={},
+        )
+        adapter.synthesize(
+            ref_audio=ref_audio,
+            text="second request",
+            output_path=studio_root / "data" / "outputs" / "remote_test_second.wav",
+            options={},
+        )
+
+        assert _FakeGradioHandler.upload_count == 2
+        assert _FakeGradioHandler.uploaded_paths == [
+            "/tmp/gradio/ref-1.wav",
+            "/tmp/gradio/ref-2.wav",
+        ]
+
+        payload = _FakeGradioHandler.last_payload
+        assert payload is not None
+        assert isinstance(payload["data"][1], dict)
+        assert payload["data"][1]["path"] == "/tmp/gradio/ref-2.wav"
     finally:
         server.shutdown()
         server.server_close()

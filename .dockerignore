@@ -1,0 +1,15 @@
+.git
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+.env
+.env.local
+
+data/logs/
+data/outputs/
+data/projects/
+
+web/node_modules/
+web/dist/

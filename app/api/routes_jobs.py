@@ -18,7 +18,8 @@ def job_capabilities(container: ServiceContainer = Depends(get_container)) -> di
         message="Job capabilities loaded.",
         data={
             "async_jobs": True,
-            "queue_backend": "in_memory_serial",
+            "queue_backend": "json_file_serial",
+            "persistent": True,
             "queue_size": container.job_service.queue_size(),
             "audio": container.audio_service.capabilities(),
         },

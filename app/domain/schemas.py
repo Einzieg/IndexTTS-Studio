@@ -45,6 +45,11 @@ class SingleSynthesizeRequest(BaseModel):
     force: bool = False
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class BatchSynthesizeRequest(BaseModel):
     project_id: str | None = None
     episode_id: str | None = None

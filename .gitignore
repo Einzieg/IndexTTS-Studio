@@ -6,10 +6,12 @@ __pycache__/
 
 # Environment
 .env
+.env.local
 
 # Runtime data
 data/logs/
 data/outputs/
+data/jobs/
 data/projects/
 data/speakers.json
 data/refs/*/

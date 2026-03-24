@@ -5,7 +5,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.core.container import ServiceContainer
+from app.core.container import ServiceContainer, build_container
+from app.domain.models import JobLineRecord, JobRecord
 from app.main import create_app
 
 
@@ -15,7 +16,8 @@ def test_async_job_endpoints(container: ServiceContainer) -> None:
         assert capabilities_response.status_code == 200
         capabilities = capabilities_response.json()["data"]
         assert capabilities["async_jobs"] is True
-        assert capabilities["queue_backend"] == "in_memory_serial"
+        assert capabilities["queue_backend"] == "json_file_serial"
+        assert capabilities["persistent"] is True
 
         create_response = client.post(
             "/jobs",
@@ -114,3 +116,64 @@ def test_job_lines_expose_script_override(container: ServiceContainer) -> None:
         line = lines_response.json()["data"]["items"][0]
         assert line["override"]["temperature"] == 0.31
         assert line["override"]["top_k"] == 11
+
+
+def test_persisted_queued_job_is_recovered_on_startup(
+    studio_settings,
+) -> None:
+    script_path = studio_settings.paths.scripts_dir / "episode1.csv"
+    bootstrap = build_container(studio_settings)
+    try:
+        output_dir = bootstrap.storage.script_output_dir(script_path)
+        lines = bootstrap.script_service.load_script(script_path)
+        record = JobRecord(
+            job_id="recovered-job",
+            status="queued",
+            script_path=script_path,
+            output_dir=output_dir,
+            skip_existing=False,
+            continue_on_error=True,
+            force=True,
+            total=len(lines),
+            lines=[
+                JobLineRecord(
+                    line_id=line.id,
+                    scene=line.scene,
+                    speaker=line.speaker,
+                    text=line.text,
+                    output_name=line.output_name,
+                    override=line.override,
+                    start_ms=line.start_ms,
+                    end_ms=line.end_ms,
+                )
+                for line in lines
+            ],
+        )
+        bootstrap.storage.write_json(studio_settings.paths.jobs_dir / "recovered-job.json", record)
+    finally:
+        bootstrap.shutdown()
+
+    recovered_container = build_container(studio_settings)
+    try:
+        with TestClient(create_app(recovered_container)) as client:
+            final_job: dict | None = None
+            for _ in range(40):
+                job_response = client.get("/jobs/recovered-job")
+                assert job_response.status_code == 200
+                final_job = job_response.json()["data"]
+                if final_job["status"] in {"completed", "completed_with_errors", "failed"}:
+                    break
+                time.sleep(0.05)
+
+            assert final_job is not None
+            assert final_job["status"] == "completed"
+            assert final_job["done"] == 3
+            assert final_job["failed"] == 0
+
+            lines_response = client.get("/jobs/recovered-job/lines")
+            assert lines_response.status_code == 200
+            lines_payload = lines_response.json()["data"]["items"]
+            assert len(lines_payload) == 3
+            assert all(line["status"] == "done" for line in lines_payload)
+    finally:
+        recovered_container.shutdown()

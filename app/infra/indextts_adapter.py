@@ -172,11 +172,11 @@ class RemoteGradioAdapter:
         self.api_prefix = settings.model.gradio_api_prefix.rstrip("/")
         self.api_name = settings.model.gradio_api_name
         self._lock = threading.Lock()
-        self._upload_cache: dict[tuple[str, float, int], str] = {}
+        self._info_cache: dict[str, Any] | None = None
 
     def warmup(self) -> None:
         self._request_json("GET", f"{self.base_url}/config")
-        self._request_json("GET", self._route("/info"))
+        self._get_info(force_refresh=True)
 
     def synthesize(
         self,
@@ -212,9 +212,7 @@ class RemoteGradioAdapter:
                     self._route(f"/call{self.api_name}/{event_id}")
                 )
                 if event_type != "complete":
-                    raise SynthesisError(
-                        "Remote Gradio queue returned an error event without details."
-                    )
+                    raise SynthesisError(self._format_terminal_error(event_type, event_payload))
 
                 remote_output = self._extract_remote_output(event_payload)
                 self._download_to(remote_output, output_path)
@@ -247,8 +245,6 @@ class RemoteGradioAdapter:
             if emo_audio is not None and uploaded_emo is not None
             else None
         )
-        mode_index, mode_label = self._resolve_emotion_mode(options)
-
         common_tail = [
             float(options.get("emo_alpha", 0.65)),
             *self._emotion_vector_values(options.get("emo_vector")),
@@ -265,11 +261,11 @@ class RemoteGradioAdapter:
             int(options.get("max_mel_tokens", 1500)),
         ]
 
-        prompt_candidates = [uploaded_ref, file_data_ref]
-        emo_candidates: list[Any] = [uploaded_emo if uploaded_emo is not None else None]
+        prompt_candidates: list[Any] = [file_data_ref]
+        emo_candidates: list[Any] = [None]
         if file_data_emo is not None:
-            emo_candidates.append(file_data_emo)
-        mode_candidates: list[int | str] = [mode_index, mode_label]
+            emo_candidates.insert(0, file_data_emo)
+        mode_candidates = self._emotion_mode_candidates(options)
 
         for mode in mode_candidates:
             for prompt in prompt_candidates:
@@ -284,6 +280,98 @@ class RemoteGradioAdapter:
         if options.get("emo_audio") is not None:
             return 1, "使用情感参考音频"
         return 0, "与音色参考音频相同"
+
+    def _emotion_mode_candidates(self, options: Mapping[str, Any]) -> list[Any]:
+        mode_key = self._resolve_emotion_mode_key(options)
+        choices = self._available_emotion_mode_choices()
+        if choices:
+            matches = [
+                choice for choice in choices if self._matches_emotion_mode_choice(choice, mode_key)
+            ]
+            if matches:
+                return matches
+            if mode_key == "text":
+                raise SynthesisError(
+                    "The remote IndexTTS WebUI does not expose an emotion-text control mode."
+                )
+
+        fallback: dict[str, list[Any]] = {
+            "same": ["Same as the voice reference", "与音色参考音频相同", 0],
+            "audio": ["Use emotion reference audio", "使用情感参考音频", 1],
+            "vector": ["Use emotion vectors", "使用情感向量", 2],
+            "text": ["Use emotion description text", "使用情感描述文本控制", 3],
+        }
+        return fallback[mode_key]
+
+    def _resolve_emotion_mode_key(self, options: Mapping[str, Any]) -> str:
+        if options.get("use_emo_text"):
+            return "text"
+        if options.get("emo_vector"):
+            return "vector"
+        if options.get("emo_audio") is not None:
+            return "audio"
+        return "same"
+
+    def _available_emotion_mode_choices(self) -> list[str]:
+        endpoint = self._get_named_endpoint(self.api_name)
+        parameters = endpoint.get("parameters")
+        if not isinstance(parameters, list):
+            return []
+        for parameter in parameters:
+            if not isinstance(parameter, dict):
+                continue
+            if parameter.get("parameter_name") != "emo_control_method":
+                continue
+            type_info = parameter.get("type")
+            if not isinstance(type_info, dict):
+                return []
+            enum_values = type_info.get("enum")
+            if not isinstance(enum_values, list):
+                return []
+            return [str(item) for item in enum_values]
+        return []
+
+    def _get_named_endpoint(self, api_name: str) -> dict[str, Any]:
+        info = self._get_info()
+        endpoints = info.get("named_endpoints")
+        if not isinstance(endpoints, dict):
+            return {}
+        endpoint = endpoints.get(api_name)
+        if isinstance(endpoint, dict):
+            return endpoint
+        return {}
+
+    def _get_info(self, *, force_refresh: bool = False) -> dict[str, Any]:
+        with self._lock:
+            if self._info_cache is not None and not force_refresh:
+                return self._info_cache
+        response = self._request_json("GET", self._route("/info"))
+        info = response if isinstance(response, dict) else {}
+        with self._lock:
+            self._info_cache = info
+        return info
+
+    def _matches_emotion_mode_choice(self, choice: str, mode_key: str) -> bool:
+        normalized = choice.strip().lower()
+        if mode_key == "same":
+            return "same as the voice reference" in normalized or (
+                "音色" in choice and "相同" in choice
+            )
+        if mode_key == "audio":
+            return "emotion reference audio" in normalized or (
+                "情感" in choice and "参考" in choice and "音频" in choice
+            )
+        if mode_key == "vector":
+            return (
+                "emotion vectors" in normalized
+                or "emotion vector" in normalized
+                or "向量" in choice
+            )
+        return (
+            "emotion description" in normalized
+            or "emotion text" in normalized
+            or ("情感" in choice and "文本" in choice)
+        )
 
     def _emotion_vector_values(self, value: Any) -> list[float]:
         if isinstance(value, list):
@@ -308,12 +396,6 @@ class RemoteGradioAdapter:
 
     def _upload_file(self, file_path: Path) -> str:
         path = file_path.resolve()
-        cache_key = (str(path), path.stat().st_mtime, path.stat().st_size)
-        with self._lock:
-            cached = self._upload_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
         boundary = "----IndexTTSStudio" + uuid4().hex
         body = (
             f"--{boundary}\r\n".encode("utf-8")
@@ -332,10 +414,7 @@ class RemoteGradioAdapter:
         )
         if not isinstance(response, list) or not response:
             raise SynthesisError(f"Unexpected Gradio upload response: {response!r}")
-        uploaded_path = str(response[0])
-        with self._lock:
-            self._upload_cache[cache_key] = uploaded_path
-        return uploaded_path
+        return str(response[0])
 
     def _read_sse_terminal_event(self, url: str) -> tuple[str, Any]:
         request_obj = urllib_request.Request(url, method="GET")
@@ -420,6 +499,16 @@ class RemoteGradioAdapter:
         if not content:
             return None
         return json.loads(content)
+
+    def _format_terminal_error(self, event_type: str, payload: Any) -> str:
+        if isinstance(payload, dict):
+            for key in ("error", "message", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return f"Remote Gradio queue returned `{event_type}`: {value.strip()}"
+        if isinstance(payload, str) and payload.strip():
+            return f"Remote Gradio queue returned `{event_type}`: {payload.strip()}"
+        return f"Remote Gradio queue returned `{event_type}` without details."
 
     def _route(self, suffix: str) -> str:
         normalized_suffix = suffix if suffix.startswith("/") else f"/{suffix}"

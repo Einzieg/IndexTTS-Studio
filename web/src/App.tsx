@@ -7,6 +7,7 @@ import {
   FolderKanban,
   Layers3,
   LoaderCircle,
+  LogOut,
   RefreshCcw,
   Sparkles,
   UserRound,
@@ -16,12 +17,21 @@ import {
 import { startTransition, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { FieldLabel, MetricChip } from "./components";
-import { displayStatus, noticeClasses, requestJson, statusClasses } from "./lib";
+import {
+  AUTH_REQUIRED_EVENT,
+  UnauthorizedError,
+  displayStatus,
+  noticeClasses,
+  requestJson,
+  statusClasses,
+} from "./lib";
 import { JobsPage } from "./pages/JobsPage";
+import { LoginPage } from "./pages/LoginPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { RolesPage } from "./pages/RolesPage";
 import { StudioPage } from "./pages/StudioPage";
 import type {
+  AuthSessionPayload,
   HealthPayload,
   JobLinesPayload,
   JobListPayload,
@@ -40,7 +50,7 @@ const EPISODE_STORAGE_PREFIX = "indextts-studio:selected-episode";
 type NavItem = {
   id: StudioPageId;
   title: string;
-  description: string;
+  description?: string;
   icon: LucideIcon;
 };
 
@@ -81,33 +91,34 @@ function readStoredEpisodeId(projectId: string): string {
   return window.localStorage.getItem(selectedEpisodeStorageKey(projectId)) ?? "";
 }
 
-function pageHeading(page: StudioPageId): { title: string; description: string } {
+function pageHeading(page: StudioPageId): { title: string; description?: string } {
   if (page === "projects") {
-    return {
-      title: "项目配置",
-      description: "在独立页面里创建项目、维护说明，并为项目添加分集。",
-    };
+      return {
+        title: "项目配置",
+      };
   }
   if (page === "roles") {
-    return {
-      title: "角色管理",
-      description: "为当前项目维护参考音频和默认参数，角色之间按项目隔离。",
-    };
+      return {
+        title: "角色管理",
+      };
   }
   if (page === "studio") {
-    return {
-      title: "文本配音",
-      description: "围绕当前项目和分集维护台词表，单句试听与多选批量生成合并在同一工作台中。",
-    };
+      return {
+        title: "文本配音",
+      };
   }
   return {
-    title: "任务试听",
-    description: "查看异步任务、逐句结果和最近一次试听输出。",
+    title: "任务管理",
   };
 }
 
 export default function App() {
   const [page, setPage] = useState<StudioPageId>(() => readPageFromHash());
+  const [authSession, setAuthSession] = useState<AuthSessionPayload | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(readStoredProjectId);
@@ -119,7 +130,7 @@ export default function App() {
   const [singleResult, setSingleResult] = useState<SingleResult | null>(null);
   const [notice, setNotice] = useState<Notice>({
     tone: "info",
-    message: "先到项目配置页创建项目和分集，再进入角色管理和文本配音页面。",
+    message: "请先创建项目和分集。",
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isJobLinesLoading, setIsJobLinesLoading] = useState(false);
@@ -132,41 +143,80 @@ export default function App() {
     () => activeProject?.episodes.find((episode) => episode.id === selectedEpisodeId) ?? null,
     [activeProject, selectedEpisodeId],
   );
+  const authEnabled = authSession?.enabled ?? false;
+  const isAuthenticated = authSession?.authenticated ?? false;
   const header = useMemo(() => pageHeading(page), [page]);
   const navItems = useMemo<NavItem[]>(
     () => [
       {
         id: "projects",
         title: "项目配置",
-        description: "创建项目与分集",
         icon: FolderKanban,
       },
       {
         id: "roles",
         title: "角色管理",
-        description: "上传参考音频与角色参数",
         icon: UserRound,
       },
       {
         id: "studio",
         title: "文本配音",
-        description: "表格化编排并批量生成",
         icon: FileAudio2,
       },
       {
         id: "jobs",
-        title: "任务试听",
-        description: "查看任务状态与输出",
+        title: "任务管理",
         icon: Layers3,
       },
     ],
     [],
   );
 
+  const loadAuthSession = useEffectEvent(async () => {
+    setIsAuthChecking(true);
+    try {
+      const payload = await requestJson<AuthSessionPayload>("/auth/session");
+      startTransition(() => {
+        setAuthSession(payload);
+        setLoginError(null);
+      });
+    } catch (error) {
+      startTransition(() => {
+        setAuthSession({ enabled: false, authenticated: true, username: null });
+        setLoginError(null);
+      });
+      setNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : "加载登录状态失败。",
+      });
+    } finally {
+      setIsAuthChecking(false);
+    }
+  });
+
   useEffect(() => {
     const handleHashChange = () => setPage(readPageFromHash());
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    const handleAuthRequired = () => {
+      startTransition(() => {
+        setAuthSession((current) => ({
+          enabled: current?.enabled ?? true,
+          authenticated: false,
+          username: null,
+        }));
+        setLoginError("登录已失效，请重新登录。");
+      });
+    };
+    window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+    return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
+  }, []);
+
+  useEffect(() => {
+    void loadAuthSession();
   }, []);
 
   useEffect(() => {
@@ -212,8 +262,10 @@ export default function App() {
   const refreshOverview = useEffectEvent(async () => {
     setIsRefreshing(true);
     try {
-      const [healthData, projectData, jobData] = await Promise.all([
-        requestJson<HealthPayload>("/health"),
+      const healthData = await requestJson<HealthPayload>("/health");
+      setHealth(healthData);
+
+      const [projectData, jobData] = await Promise.all([
         requestJson<ProjectListPayload>("/projects"),
         requestJson<JobListPayload>("/jobs"),
       ]);
@@ -223,17 +275,24 @@ export default function App() {
         projectData.items[0]?.id ??
         "";
 
-      const speakerData = effectiveProjectId
-        ? await requestJson<SpeakerProfilePayload>(
+      let speakerItems: SpeakerProfilePayload["items"] = [];
+      let speakerLoadError: Error | null = null;
+      if (effectiveProjectId) {
+        try {
+          const speakerData = await requestJson<SpeakerProfilePayload>(
             `/speakers/profiles?project_id=${encodeURIComponent(effectiveProjectId)}`,
-          )
-        : { items: [] };
+          );
+          speakerItems = speakerData.items;
+        } catch (error) {
+          speakerLoadError =
+            error instanceof Error ? error : new Error("加载角色数据失败。");
+        }
+      }
 
       startTransition(() => {
-        setHealth(healthData);
         setProjects(projectData.items);
         setSelectedProjectId(effectiveProjectId);
-        setSpeakers(speakerData.items);
+        setSpeakers(speakerItems);
         setJobs(jobData.items);
 
         if (!selectedJobId && jobData.items[0]) {
@@ -243,8 +302,18 @@ export default function App() {
           setSelectedJobId(jobData.items[0]?.job_id ?? null);
         }
       });
+
+      if (speakerLoadError) {
+        setNotice({
+          tone: "error",
+          message: speakerLoadError.message,
+        });
+      }
     } catch (error) {
-      setHealth({ status: "offline" });
+      if (error instanceof UnauthorizedError) {
+        return;
+      }
+      setHealth((current) => current ?? { status: "offline" });
       setNotice({
         tone: "error",
         message: error instanceof Error ? error.message : "刷新概览失败。",
@@ -260,6 +329,9 @@ export default function App() {
       const payload = await requestJson<JobLinesPayload>(`/jobs/${jobId}/lines`);
       startTransition(() => setJobLines(payload.items));
     } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        return;
+      }
       setJobLines([]);
       setNotice({
         tone: "error",
@@ -271,16 +343,22 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (authSession === null || (authEnabled && !isAuthenticated)) {
+      return;
+    }
     void refreshOverview();
     const timer = window.setInterval(() => {
       void refreshOverview();
     }, 3000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [authSession, authEnabled, isAuthenticated]);
 
   useEffect(() => {
+    if (authSession === null || (authEnabled && !isAuthenticated)) {
+      return;
+    }
     void refreshOverview();
-  }, [selectedProjectId]);
+  }, [selectedProjectId, authSession, authEnabled, isAuthenticated]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -300,10 +378,81 @@ export default function App() {
     void loadJobLines(jobId);
   });
 
+  const handleLogin = useEffectEvent(async (username: string, password: string) => {
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const payload = (await response.json()) as { success: boolean; message: string; data: AuthSessionPayload };
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.message || "登录失败。");
+      }
+      startTransition(() => {
+        setAuthSession(payload.data);
+        setLoginError(null);
+      });
+      setNotice({
+        tone: "success",
+        message: payload.data.username ? `欢迎回来，${payload.data.username}。` : "登录成功。",
+      });
+      await refreshOverview();
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "登录失败。");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  });
+
+  const handleLogout = useEffectEvent(async () => {
+    setIsLoggingOut(true);
+    try {
+      await fetch("/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } finally {
+      startTransition(() => {
+        setAuthSession((current) => ({
+          enabled: current?.enabled ?? true,
+          authenticated: false,
+          username: null,
+        }));
+        setLoginError(null);
+      });
+      setNotice({
+        tone: "info",
+        message: "已退出登录。",
+      });
+      setIsLoggingOut(false);
+    }
+  });
+
+  if (isAuthChecking || authSession === null) {
+    return (
+      <div className="relative z-10 min-h-screen px-4 py-4 md:px-6">
+        <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[720px] items-center justify-center">
+          <div className="glass-shell flex w-full max-w-[420px] items-center justify-center gap-3 px-6 py-6 text-slate-600">
+            <LoaderCircle className="h-5 w-5 animate-spin" />
+            正在检查登录状态
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authEnabled && !isAuthenticated) {
+    return <LoginPage busy={isLoggingIn} error={loginError} onSubmit={handleLogin} />;
+  }
+
   return (
     <div className="relative z-10 min-h-screen px-4 py-4 md:px-6">
       <div className="mx-auto grid max-w-[1680px] gap-4 xl:grid-cols-[260px,minmax(0,1fr)]">
-        <aside className="glass-shell h-full px-4 py-4 md:px-5 md:py-5">
+        <aside className="glass-shell flex h-full flex-col px-4 py-4 md:px-5 md:py-5 xl:sticky xl:top-4 xl:self-start xl:h-[calc(100vh-2rem)]">
           <div className="border-b border-white/55 pb-5">
             <div className="mt-3 flex items-center gap-3">
               <h1 className="font-display text-4xl font-bold tracking-tight text-ink">
@@ -314,7 +463,7 @@ export default function App() {
             <div className="eyebrow text-2xl">配音控制台</div>
           </div>
 
-          <nav className="mt-5 space-y-3">
+          <nav className="mt-5 space-y-3 xl:flex-1">
             {navItems.map((item) => {
               const active = item.id === page;
               const Icon = item.icon;
@@ -333,15 +482,19 @@ export default function App() {
                     <Icon className="h-4 w-4" />
                     <span className="font-semibold">{item.title}</span>
                   </div>
-                  <div className={`mt-2 text-sm leading-7 ${active ? "text-white/75" : "text-slate-500"}`}>
-                    {item.description}
-                  </div>
+                  {item.description ? (
+                    <div
+                      className={`mt-2 text-sm leading-7 ${active ? "text-white/75" : "text-slate-500"}`}
+                    >
+                      {item.description}
+                    </div>
+                  ) : null}
                 </button>
               );
             })}
           </nav>
 
-          <div className="mt-5 grid gap-2">
+          <div className="mt-5 grid gap-2 border-t border-white/55 pt-5 xl:mt-auto">
             <MetricChip
               icon={<FolderKanban className="h-4 w-4" />}
               label="项目"
@@ -358,40 +511,67 @@ export default function App() {
               value={String(jobs.length)}
             />
           </div>
+          <div className="mt-3 rounded-[28px] border border-white/70 bg-slate-100/55 px-4 py-4 shadow-inner">
+            <div className="eyebrow">服务状态</div>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <span className={statusClasses(health?.status ?? "offline")}>
+                <HealthStatusIcon status={health?.status} />
+                {displayStatus(health?.status ?? "offline")}
+              </span>
+              <button
+                className="action-button action-button-ghost px-3 py-2 text-xs"
+                disabled={isRefreshing}
+                onClick={() => void refreshOverview()}
+                type="button"
+              >
+                {isRefreshing ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCcw className="h-4 w-4" />
+                )}
+                刷新
+              </button>
+            </div>
+            {authEnabled && authSession.username ? (
+              <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/60 pt-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  已登录：{authSession.username}
+                </div>
+                <button
+                  className="action-button action-button-secondary px-3 py-2 text-xs"
+                  disabled={isLoggingOut}
+                  onClick={() => void handleLogout()}
+                  type="button"
+                >
+                  {isLoggingOut ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <LogOut className="h-4 w-4" />
+                  )}
+                  退出
+                </button>
+              </div>
+            ) : null}
+          </div>
         </aside>
 
-        <div className="space-y-4">
+        <div className="space-y-3">
           <header className="glass-shell px-4 py-4 md:px-6 md:py-5">
-            <div className="flex flex-col gap-5 border-b border-white/55 pb-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex flex-col gap-4 border-b border-white/55 pb-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="max-w-3xl">
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <h2 className="font-display text-3xl font-semibold text-ink md:text-4xl">
                     {header.title}
                   </h2>
-                  <span className={statusClasses(health?.status ?? "offline")}>
-                    <HealthStatusIcon status={health?.status} />
-                    {displayStatus(health?.status ?? "offline")}
-                  </span>
                 </div>
-                <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 md:text-base">
-                  {header.description}
-                </p>
+                {header.description ? (
+                  <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-600 md:text-base">
+                    {header.description}
+                  </p>
+                ) : null}
               </div>
 
               <div className="flex flex-wrap gap-3 xl:justify-end">
-                <button
-                  className="action-button action-button-ghost"
-                  disabled={isRefreshing}
-                  onClick={() => void refreshOverview()}
-                  type="button"
-                >
-                  {isRefreshing ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <RefreshCcw className="h-4 w-4" />
-                  )}
-                  刷新
-                </button>
                 <a
                   className="action-button action-button-secondary"
                   href="/docs"
@@ -404,10 +584,10 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr),280px,280px]">
-              <div className="rounded-[28px] border border-white/70 bg-slate-100/55 px-4 py-4 shadow-inner">
+            <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr),280px,280px]">
+              <div className="rounded-[28px] border border-white/70 bg-slate-100/55 px-4 py-3 shadow-inner">
                 <div className="eyebrow">当前上下文</div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-600">
                   <span className="rounded-full border border-white/70 bg-white/72 px-3 py-2 font-semibold text-slate-700">
                     项目：{activeProject?.name ?? "未选择"}
                   </span>

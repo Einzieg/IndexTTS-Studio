@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,15 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
 
 
 def _resolve_path(value: str | None, *, root: Path, default: Path) -> Path:
@@ -75,6 +85,18 @@ class ApiSettings:
 
 
 @dataclass(slots=True)
+class AuthSettings:
+    enabled: bool = False
+    username: str = ""
+    password: str = ""
+    session_secret: str = ""
+    session_cookie_name: str = "indextts_studio_session"
+    session_ttl_seconds: int = 43_200
+    secure_cookie: bool = False
+    same_site: Literal["lax", "strict", "none"] = "lax"
+
+
+@dataclass(slots=True)
 class GenerationDefaults:
     temperature: float = 0.8
     top_p: float = 0.8
@@ -122,12 +144,14 @@ class PathSettings:
     refs_dir: Path
     outputs_dir: Path
     logs_dir: Path
+    jobs_dir: Path
 
 
 @dataclass(slots=True)
 class AppSettings:
     paths: PathSettings
     api: ApiSettings = field(default_factory=ApiSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
     generation: GenerationDefaults = field(default_factory=GenerationDefaults)
     model: ModelSettings = field(default_factory=ModelSettings)
     log_level: str = "INFO"
@@ -139,6 +163,7 @@ class AppSettings:
         self.paths.refs_dir.mkdir(parents=True, exist_ok=True)
         self.paths.outputs_dir.mkdir(parents=True, exist_ok=True)
         self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.jobs_dir.mkdir(parents=True, exist_ok=True)
 
 
 def load_settings() -> AppSettings:
@@ -183,6 +208,11 @@ def load_settings() -> AppSettings:
             os.getenv("INDEXTTS_STUDIO_LOGS_DIR"),
             root=project_root,
             default=data_dir / "logs",
+        ),
+        jobs_dir=_resolve_path(
+            os.getenv("INDEXTTS_STUDIO_JOBS_DIR"),
+            root=project_root,
+            default=data_dir / "jobs",
         ),
     )
 
@@ -233,9 +263,48 @@ def load_settings() -> AppSettings:
         port=int(os.getenv("INDEXTTS_STUDIO_PORT", "8000")),
     )
 
+    auth_username = os.getenv("INDEXTTS_STUDIO_AUTH_USERNAME", "").strip()
+    auth_password = os.getenv("INDEXTTS_STUDIO_AUTH_PASSWORD", "")
+    auth_enabled_env = os.getenv("INDEXTTS_STUDIO_AUTH_ENABLED")
+    auth_enabled = (
+        _parse_bool(auth_enabled_env, False)
+        if auth_enabled_env is not None
+        else bool(auth_username and auth_password)
+    )
+    auth_secret = os.getenv("INDEXTTS_STUDIO_AUTH_SESSION_SECRET", "").strip()
+    if auth_enabled and not auth_secret:
+        auth_secret = hashlib.sha256(
+            f"{project_root}:{auth_username}:{auth_password}".encode("utf-8")
+        ).hexdigest()
+    auth_same_site = os.getenv("INDEXTTS_STUDIO_AUTH_SAME_SITE", "lax").strip().lower()
+    if auth_same_site not in {"lax", "strict", "none"}:
+        auth_same_site = "lax"
+
+    auth = AuthSettings(
+        enabled=auth_enabled,
+        username=auth_username,
+        password=auth_password,
+        session_secret=auth_secret,
+        session_cookie_name=os.getenv(
+            "INDEXTTS_STUDIO_AUTH_COOKIE_NAME",
+            "indextts_studio_session",
+        ).strip()
+        or "indextts_studio_session",
+        session_ttl_seconds=_parse_int(
+            os.getenv("INDEXTTS_STUDIO_AUTH_SESSION_TTL_SECONDS"),
+            43_200,
+        ),
+        secure_cookie=_parse_bool(
+            os.getenv("INDEXTTS_STUDIO_AUTH_SECURE_COOKIE"),
+            False,
+        ),
+        same_site=auth_same_site,  # type: ignore[arg-type]
+    )
+
     settings = AppSettings(
         paths=paths,
         api=api,
+        auth=auth,
         model=model,
         log_level=os.getenv("INDEXTTS_STUDIO_LOG_LEVEL", "INFO").upper(),
         env_file=env_file,

@@ -11,6 +11,9 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
         "INDEXTTS_STUDIO_BACKEND",
         "INDEXTTS_STUDIO_GRADIO_BASE_URL",
         "INDEXTTS_STUDIO_PORT",
+        "INDEXTTS_STUDIO_AUTH_ENABLED",
+        "INDEXTTS_STUDIO_AUTH_USERNAME",
+        "INDEXTTS_STUDIO_AUTH_PASSWORD",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -23,6 +26,9 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
                 "INDEXTTS_STUDIO_BACKEND=mock",
                 "INDEXTTS_STUDIO_GRADIO_BASE_URL=http://127.0.0.1:9999",
                 "INDEXTTS_STUDIO_PORT=8123",
+                "INDEXTTS_STUDIO_AUTH_ENABLED=true",
+                "INDEXTTS_STUDIO_AUTH_USERNAME=tester",
+                "INDEXTTS_STUDIO_AUTH_PASSWORD=secret123",
             ]
         ),
         encoding="utf-8",
@@ -36,6 +42,10 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
     assert settings.env_file == env_file
     assert settings.paths.project_root == tmp_path
     assert settings.paths.data_dir == (tmp_path / "runtime_data")
+    assert settings.paths.jobs_dir == (tmp_path / "runtime_data" / "jobs")
     assert settings.model.backend == "mock"
     assert settings.model.gradio_base_url == "http://127.0.0.1:9999"
     assert settings.api.port == 8123
+    assert settings.auth.enabled is True
+    assert settings.auth.username == "tester"
+    assert settings.auth.password == "secret123"

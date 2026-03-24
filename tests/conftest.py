@@ -95,6 +95,7 @@ def studio_settings(studio_root: Path) -> AppSettings:
             refs_dir=data_dir / "refs",
             outputs_dir=data_dir / "outputs",
             logs_dir=data_dir / "logs",
+            jobs_dir=data_dir / "jobs",
         ),
         api=ApiSettings(host="127.0.0.1", port=8001),
         model=ModelSettings(backend="mock", warmup_on_startup=True),
