@@ -13,7 +13,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { AudioCard, EmptyState, FieldLabel, ToggleTile } from "../components";
@@ -90,6 +90,10 @@ type StudioTablePayload = {
 };
 
 const LEGACY_DRAFT_PREFIX = "indextts-studio:episode-draft";
+const MAX_DIALOGUE_LINE_CHARS = 120;
+const STRONG_BREAK_CHARS = new Set(["。", "！", "？", "!", "?", "；", ";", "…"]);
+const SOFT_BREAK_CHARS = new Set(["，", ",", "、", "：", ":"]);
+const CLOSING_PUNCTUATION = new Set(["”", "’", "\"", "'", "）", ")", "】", "]", "》", "」", "』"]);
 
 function createEmptyConfigForm(): ConfigFormState {
   return {
@@ -166,6 +170,125 @@ function makeId(): string {
     return crypto.randomUUID();
   }
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function textLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function compactInlineWhitespace(value: string): string {
+  return value.replace(/[ \t\f\v]+/g, " ").trim();
+}
+
+function needsSpaceBetween(left: string, right: string): boolean {
+  const leftChars = Array.from(left);
+  const rightChars = Array.from(right);
+  const leftChar = leftChars[leftChars.length - 1] ?? "";
+  const rightChar = rightChars[0] ?? "";
+  return /[A-Za-z0-9)]/.test(leftChar) && /[A-Za-z0-9("'[]/.test(rightChar);
+}
+
+function splitByBreaks(value: string, breakChars: Set<string>): string[] {
+  const chars = Array.from(value);
+  const segments: string[] = [];
+  let current = "";
+
+  for (let index = 0; index < chars.length; index += 1) {
+    current += chars[index];
+    if (!breakChars.has(chars[index])) {
+      continue;
+    }
+
+    while (index + 1 < chars.length && CLOSING_PUNCTUATION.has(chars[index + 1])) {
+      index += 1;
+      current += chars[index];
+    }
+
+    if (current.trim()) {
+      segments.push(current.trim());
+    }
+    current = "";
+  }
+
+  if (current.trim()) {
+    segments.push(current.trim());
+  }
+
+  return segments.length > 0 ? segments : [value.trim()];
+}
+
+function hardSplitLine(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+  const chars = Array.from(value);
+  const chunks: string[] = [];
+  for (let index = 0; index < chars.length; index += maxLength) {
+    const chunk = chars.slice(index, index + maxLength).join("").trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+  }
+  return chunks;
+}
+
+function packDialogueSegments(segments: string[], maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+  const lines: string[] = [];
+  let current = "";
+
+  for (const rawSegment of segments) {
+    const segment = rawSegment.trim();
+    if (!segment) {
+      continue;
+    }
+    if (!current) {
+      current = segment;
+      continue;
+    }
+
+    const joiner = needsSpaceBetween(current, segment) ? " " : "";
+    const candidate = `${current}${joiner}${segment}`;
+    if (textLength(candidate) <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    lines.push(current);
+    current = segment;
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  return lines;
+}
+
+function splitDialogueParagraph(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+  if (textLength(value) <= maxLength) {
+    return [value];
+  }
+
+  const strongLines = packDialogueSegments(splitByBreaks(value, STRONG_BREAK_CHARS), maxLength);
+  const softLines = strongLines.flatMap((line) =>
+    textLength(line) <= maxLength
+      ? [line]
+      : packDialogueSegments(splitByBreaks(line, SOFT_BREAK_CHARS), maxLength),
+  );
+
+  return softLines.flatMap((line) =>
+    textLength(line) <= maxLength ? [line] : hardSplitLine(line, maxLength),
+  );
+}
+
+function splitDialogueText(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map(compactInlineWhitespace)
+    .filter(Boolean)
+    .flatMap((paragraph) => splitDialogueParagraph(paragraph, maxLength));
+}
+
+function tooLongDialogueMessage(length: number): string {
+  return `单行台词最多 ${MAX_DIALOGUE_LINE_CHARS} 字，当前 ${length} 字。请先使用智能分行。`;
 }
 
 function createEmptyRow(defaultSpeaker: string, index: number): StudioRow {
@@ -420,10 +543,19 @@ export function StudioPage(props: {
       if (current.length === 0) {
         return [createEmptyRow(firstSpeaker, 1)];
       }
-      return current.map((row) => ({
-        ...row,
-        speaker: speakerNames.includes(row.speaker) ? row.speaker : firstSpeaker,
-      }));
+      return current.map((row) => {
+        if (speakerNames.includes(row.speaker)) {
+          return row;
+        }
+        return {
+          ...row,
+          speaker: firstSpeaker,
+          renders: [],
+          selectedRenderId: null,
+          lastStatus: "idle",
+          lastError: null,
+        };
+      });
     });
   }, [firstSpeaker, speakerNames.join("|")]);
 
@@ -464,6 +596,113 @@ export function StudioPage(props: {
     setRows((current) =>
       current.map((row) => (row.rowId === rowId ? { ...row, ...patch } : row)),
     );
+  }
+
+  function rowWithSplitText(row: StudioRow, text: string): StudioRow {
+    return {
+      ...row,
+      text,
+      renders: [],
+      selectedRenderId: null,
+      lastStatus: "idle",
+      lastError: null,
+    };
+  }
+
+  function createSplitRow(baseRow: StudioRow, text: string, index: number): StudioRow {
+    return {
+      ...createEmptyRow(baseRow.speaker, index),
+      speaker: baseRow.speaker,
+      text,
+      selected: baseRow.selected,
+      override: { ...baseRow.override },
+    };
+  }
+
+  function applySplitToRows(
+    rowIds: string[],
+    segmentOverrides?: Map<string, string[]>,
+  ): { changed: number; inserted: number } {
+    const targetIds = new Set(rowIds);
+    let changed = 0;
+    let inserted = 0;
+    const nextRows: StudioRow[] = [];
+
+    for (const row of rows) {
+      if (!targetIds.has(row.rowId)) {
+        nextRows.push(row);
+        continue;
+      }
+
+      const segments = segmentOverrides?.get(row.rowId) ?? splitDialogueText(row.text);
+      if (segments.length <= 1) {
+        nextRows.push(row);
+        continue;
+      }
+
+      changed += 1;
+      inserted += segments.length - 1;
+      nextRows.push(rowWithSplitText(row, segments[0]));
+      for (const segment of segments.slice(1)) {
+        nextRows.push(createSplitRow(row, segment, nextRows.length + 1));
+      }
+    }
+
+    setRows(nextRows.length > 0 ? nextRows : [createEmptyRow(firstSpeaker, 1)]);
+
+    return { changed, inserted };
+  }
+
+  function splitSelectedRows() {
+    if (selectedRows.length === 0) {
+      props.setNotice({ tone: "error", message: "请先勾选需要分行的台词。" });
+      return;
+    }
+
+    const { changed, inserted } = applySplitToRows(selectedRows.map((row) => row.rowId));
+    props.setNotice({
+      tone: changed > 0 ? "success" : "info",
+      message:
+        changed > 0
+          ? `已智能分行 ${changed} 行，新增 ${inserted} 行。`
+          : "选中的台词不需要分行。",
+    });
+  }
+
+  function splitSingleRow(rowId: string) {
+    const { changed, inserted } = applySplitToRows([rowId]);
+    props.setNotice({
+      tone: changed > 0 ? "success" : "info",
+      message:
+        changed > 0
+          ? `已智能分行，新增 ${inserted} 行。`
+          : "当前台词不需要分行。",
+    });
+  }
+
+  function handleTextPaste(rowId: string, event: ClipboardEvent<HTMLTextAreaElement>) {
+    const pastedText = event.clipboardData.getData("text/plain");
+    if (!pastedText.trim()) {
+      return;
+    }
+
+    const target = event.currentTarget;
+    const selectionStart = target.selectionStart ?? target.value.length;
+    const selectionEnd = target.selectionEnd ?? target.value.length;
+    const mergedText =
+      target.value.slice(0, selectionStart) + pastedText + target.value.slice(selectionEnd);
+    const segments = splitDialogueText(mergedText);
+    if (segments.length <= 1 && textLength(mergedText.trim()) <= MAX_DIALOGUE_LINE_CHARS) {
+      return;
+    }
+
+    event.preventDefault();
+    const overrides = new Map([[rowId, segments]]);
+    applySplitToRows([rowId], overrides);
+    props.setNotice({
+      tone: "success",
+      message: `已自动将粘贴内容分成 ${segments.length} 行。`,
+    });
   }
 
   function addRow() {
@@ -618,6 +857,13 @@ export function StudioPage(props: {
         continue;
       }
 
+      const cleanText = row.text.trim();
+      const cleanTextLength = textLength(cleanText);
+      if (cleanTextLength > MAX_DIALOGUE_LINE_CHARS) {
+        failedRows.push({ rowId: row.rowId, error: tooLongDialogueMessage(cleanTextLength) });
+        continue;
+      }
+
       if (!options.overwriteExisting && selectedRender) {
         skippedRowIds.push(row.rowId);
         continue;
@@ -627,7 +873,7 @@ export function StudioPage(props: {
         id: row.rowId,
         scene: "web",
         speaker: row.speaker,
-        text: row.text.trim(),
+        text: cleanText,
         output_name: buildOutputName(row, "batch", props.activeEpisodeId),
         override: row.override,
       });
@@ -893,6 +1139,24 @@ export function StudioPage(props: {
           continue;
         }
 
+        const cleanText = row.text.trim();
+        const cleanTextLength = textLength(cleanText);
+        if (cleanTextLength > MAX_DIALOGUE_LINE_CHARS) {
+          failed += 1;
+          setRows((current) =>
+            current.map((item) =>
+              item.rowId === row.rowId
+                ? {
+                    ...item,
+                    lastStatus: "failed",
+                    lastError: tooLongDialogueMessage(cleanTextLength),
+                  }
+                : item,
+            ),
+          );
+          continue;
+        }
+
         if (!options.overwriteExisting && selectedRender) {
           skipped += 1;
           setRows((current) =>
@@ -918,7 +1182,7 @@ export function StudioPage(props: {
               project_id: props.project.id,
               episode_id: props.activeEpisodeId,
               speaker: row.speaker,
-              text: row.text,
+              text: cleanText,
               output_name: buildOutputName(row, options.source, props.activeEpisodeId),
               override,
               force: true,
@@ -1221,6 +1485,15 @@ export function StudioPage(props: {
                 新增一行
               </button>
               <button
+                className="action-button action-button-secondary"
+                disabled={selectedRows.length === 0}
+                onClick={splitSelectedRows}
+                type="button"
+              >
+                <WandSparkles className="h-4 w-4" />
+                智能分行
+              </button>
+              <button
                 className="action-button action-button-ghost"
                 disabled={isExporting || exportableRowCount === 0}
                 onClick={() => void exportCurrentEpisode()}
@@ -1291,6 +1564,9 @@ export function StudioPage(props: {
                 </button>
               </div>
             </div>
+            <div className="mt-3 text-xs leading-6 text-slate-500">
+              单行台词上限 {MAX_DIALOGUE_LINE_CHARS} 字。粘贴长段落或多行文本时会自动按标点拆成多行，生成前仍会拦截超长单行。
+            </div>
           </div>
 
           {speakerNames.length === 0 ? (
@@ -1317,6 +1593,8 @@ export function StudioPage(props: {
                   <tbody>
                     {rows.map((row, index) => {
                       const selectedRender = selectedRenderForRow(row);
+                      const rowTextLength = textLength(row.text.trim());
+                      const isRowTextTooLong = rowTextLength > MAX_DIALOGUE_LINE_CHARS;
                       return (
                         <tr key={row.rowId} className="border-t border-white/70 align-top transition-colors hover:bg-slate-50/70">
                           <td className="px-4 py-4">
@@ -1333,8 +1611,18 @@ export function StudioPage(props: {
                             </select>
                           </td>
                           <td className="min-w-[360px] px-4 py-4">
-                            <textarea className="field-shell min-h-[110px] w-full resize-y" onChange={(event) => updateRow(row.rowId, { text: event.target.value })} placeholder="直接填写要生成的台词。" value={row.text} />
-                            <div className="mt-2 text-xs text-slate-400">当前详细参数 {Object.keys(row.override || {}).length} 项</div>
+                            <textarea
+                              className={`field-shell min-h-[110px] w-full resize-y ${
+                                isRowTextTooLong ? "border-rose-200 bg-rose-50/60" : ""
+                              }`}
+                              onChange={(event) => updateRow(row.rowId, { text: event.target.value })}
+                              onPaste={(event) => handleTextPaste(row.rowId, event)}
+                              placeholder="直接填写要生成的台词，粘贴长段落会自动分行。"
+                              value={row.text}
+                            />
+                            <div className={`mt-2 text-xs ${isRowTextTooLong ? "text-rose-600" : "text-slate-400"}`}>
+                              {rowTextLength}/{MAX_DIALOGUE_LINE_CHARS} 字 · 当前详细参数 {Object.keys(row.override || {}).length} 项
+                            </div>
                           </td>
                           <td className="min-w-[180px] px-4 py-4">
                             <div className="flex flex-col gap-3">
@@ -1378,6 +1666,10 @@ export function StudioPage(props: {
                               <button className="action-button action-button-ghost" onClick={() => duplicateRow(row)} type="button">
                                 <Copy className="h-4 w-4" />
                                 复制
+                              </button>
+                              <button className="action-button action-button-ghost" onClick={() => splitSingleRow(row.rowId)} type="button">
+                                <WandSparkles className="h-4 w-4" />
+                                分行
                               </button>
                               <button className="action-button action-button-ghost" disabled={rows.length === 1} onClick={() => removeRow(row.rowId)} type="button">
                                 <Trash2 className="h-4 w-4" />

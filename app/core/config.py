@@ -133,6 +133,8 @@ class ModelSettings:
     gradio_base_url: str = "http://127.0.0.1:7861"
     gradio_api_prefix: str = "/gradio_api"
     gradio_api_name: str = "/gen_single"
+    gradio_request_timeout_seconds: int = 60
+    gradio_stream_timeout_seconds: int = 300
 
 
 @dataclass(slots=True)
@@ -255,6 +257,14 @@ def load_settings() -> AppSettings:
         gradio_api_name=os.getenv(
             "INDEXTTS_STUDIO_GRADIO_API_NAME",
             "/gen_single",
+        ),
+        gradio_request_timeout_seconds=_parse_int(
+            os.getenv("INDEXTTS_STUDIO_GRADIO_REQUEST_TIMEOUT_SECONDS"),
+            60,
+        ),
+        gradio_stream_timeout_seconds=_parse_int(
+            os.getenv("INDEXTTS_STUDIO_GRADIO_STREAM_TIMEOUT_SECONDS"),
+            300,
         ),
     )
 

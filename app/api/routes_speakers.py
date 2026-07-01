@@ -9,6 +9,7 @@ from app.api.dependencies import get_container
 from app.api.responses import api_response
 from app.core.container import ServiceContainer
 from app.core.exceptions import ValidationError
+from app.domain.schemas import CopySpeakersRequest
 
 
 router = APIRouter(tags=["speakers"])
@@ -35,6 +36,24 @@ def list_speaker_profiles(
         success=True,
         message="Loaded speaker profiles successfully.",
         data={"items": container.speaker_service.list_speaker_profiles(project_id=project_id)},
+    )
+
+
+@router.post("/speakers/copy")
+def copy_speakers(
+    payload: CopySpeakersRequest,
+    container: ServiceContainer = Depends(get_container),
+) -> dict:
+    profiles = container.speaker_service.copy_speakers(
+        source_project_id=payload.source_project_id,
+        target_project_id=payload.target_project_id,
+        speaker_names=payload.speaker_names,
+        overwrite=payload.overwrite,
+    )
+    return api_response(
+        success=True,
+        message="Speakers copied successfully.",
+        data={"items": profiles},
     )
 
 

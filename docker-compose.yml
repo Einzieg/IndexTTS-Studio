@@ -15,12 +15,9 @@ services:
       INDEXTTS_STUDIO_WARMUP_ON_STARTUP: ${INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP:-false}
       INDEXTTS_STUDIO_GRADIO_BASE_URL: ${INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL:-http://index-tts:7861}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${INDEXTTS_STUDIO_DOCKER_PORT:-8000}:${INDEXTTS_STUDIO_DOCKER_PORT:-8000}"
     volumes:
       - ./data:/app/data
-    depends_on:
-      index-tts:
-        condition: service_healthy
     networks:
       - indextts-net
     restart: unless-stopped
@@ -35,9 +32,17 @@ services:
         INDEXTTS_UPSTREAM_REF: ${INDEXTTS_UPSTREAM_REF:-main}
     image: indextts-upstream:local
     container_name: index-tts
+    profiles:
+      - bundled
     env_file:
       - .env
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     expose:
       - "7861"
     environment:

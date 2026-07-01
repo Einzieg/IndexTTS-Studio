@@ -15,6 +15,11 @@ type EpisodeFormState = {
   description: string;
 };
 
+type RefreshProjectsOptions = {
+  projectId?: string;
+  episodeId?: string;
+};
+
 function createBlankProjectForm(): ProjectFormState {
   return {
     name: "",
@@ -45,7 +50,7 @@ export function ProjectsPage(props: {
   selectedProjectId: string;
   setSelectedProjectId: (value: string) => void;
   setNotice: (notice: Notice) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: (options?: RefreshProjectsOptions) => Promise<void>;
 }) {
   const [isCreating, setIsCreating] = useState(props.projects.length === 0);
   const [projectForm, setProjectForm] = useState<ProjectFormState>(createBlankProjectForm);
@@ -93,7 +98,7 @@ export function ProjectsPage(props: {
         tone: "success",
         message: `项目 ${project.name} 已保存。`,
       });
-      await props.onRefresh();
+      await props.onRefresh({ projectId: project.id });
     } catch (error) {
       props.setNotice({
         tone: "error",
@@ -148,24 +153,29 @@ export function ProjectsPage(props: {
 
     setIsSavingEpisode(true);
     try {
+      const previousEpisodeIds = new Set(activeProject.episodes.map((episode) => episode.id));
+      const episodeName = episodeForm.name.trim();
       const project = await requestJson<ProjectConfig>(
         `/projects/${encodeURIComponent(activeProject.id)}/episodes`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: episodeForm.name.trim(),
+            name: episodeName,
             description: episodeForm.description.trim() || undefined,
           }),
         },
       );
+      const savedEpisode =
+        project.episodes.find((episode) => !previousEpisodeIds.has(episode.id)) ??
+        project.episodes.find((episode) => episode.name === episodeName);
       setEpisodeForm(createBlankEpisodeForm());
       props.setSelectedProjectId(project.id);
       props.setNotice({
         tone: "success",
-        message: `分集 ${episodeForm.name.trim()} 已保存到项目 ${project.name}。`,
+        message: `分集 ${episodeName} 已保存到项目 ${project.name}。`,
       });
-      await props.onRefresh();
+      await props.onRefresh({ projectId: project.id, episodeId: savedEpisode?.id });
     } catch (error) {
       props.setNotice({
         tone: "error",

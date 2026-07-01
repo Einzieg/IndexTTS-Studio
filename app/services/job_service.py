@@ -8,13 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from app.core.exceptions import NotFoundError, OutputNameCollisionError, StudioError
+from app.core.exceptions import NotFoundError, OutputNameCollisionError, StudioError, ValidationError
 from app.core.logger import get_logger
 from app.domain.models import (
     BatchFailure,
     BatchReport,
     JobLineRecord,
     JobRecord,
+    MAX_SCRIPT_LINE_TEXT_CHARS,
     ScriptLine,
     SynthesisResult,
 )
@@ -87,6 +88,7 @@ class JobService:
     ) -> BatchReport:
         resolved_script_path = self.storage.resolve_path(script_path)
         lines = self.script_service.load_script(resolved_script_path)
+        self._validate_line_text_lengths(lines)
         output_dir = self._resolve_output_dir(
             resolved_script_path,
             project_id=project_id,
@@ -114,6 +116,7 @@ class JobService:
     ) -> JobRecord:
         resolved_script_path = self.storage.resolve_path(script_path)
         lines = self.script_service.load_script(resolved_script_path)
+        self._validate_line_text_lengths(lines)
         output_dir = self._resolve_output_dir(
             resolved_script_path,
             project_id=project_id,
@@ -178,6 +181,7 @@ class JobService:
             lines_payload,
             auto_assign_ids=True,
         )
+        self._validate_line_text_lengths(lines)
         script_path = self.script_service.save_inline_script(
             title=title,
             lines=lines,
@@ -207,6 +211,16 @@ class JobService:
 
     def get_job_lines(self, job_id: str) -> list[JobLineRecord]:
         return self.get_job(job_id).lines
+
+    @staticmethod
+    def _validate_line_text_lengths(lines: list[ScriptLine]) -> None:
+        for line in lines:
+            text_length = len(line.text.strip())
+            if text_length > MAX_SCRIPT_LINE_TEXT_CHARS:
+                raise ValidationError(
+                    f"第 `{line.id}` 行台词长度为 {text_length} 字，超过单行上限 "
+                    f"{MAX_SCRIPT_LINE_TEXT_CHARS} 字，请先拆分后再生成。"
+                )
 
     def queue_size(self) -> int:
         return self._queue.qsize()

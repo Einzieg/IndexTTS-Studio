@@ -11,6 +11,9 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+MAX_SCRIPT_LINE_TEXT_CHARS = 120
+
+
 class GenerationOptions(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

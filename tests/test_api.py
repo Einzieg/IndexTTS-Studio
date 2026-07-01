@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.core.container import ServiceContainer
+from app.domain.models import MAX_SCRIPT_LINE_TEXT_CHARS
 from app.main import create_app
 
 
@@ -53,3 +54,20 @@ def test_api_endpoints(container: ServiceContainer) -> None:
         )
         assert regenerate_response.status_code == 200
         assert regenerate_response.json()["data"]["line_id"] == "2"
+
+
+def test_single_tts_rejects_overlong_text(container: ServiceContainer) -> None:
+    with TestClient(create_app(container)) as client:
+        response = client.post(
+            "/tts/single",
+            json={
+                "speaker": "主角A",
+                "text": "长" * (MAX_SCRIPT_LINE_TEXT_CHARS + 1),
+                "output_name": "too_long.wav",
+                "force": True,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert f"单行台词最多 {MAX_SCRIPT_LINE_TEXT_CHARS} 字" in response.json()["message"]

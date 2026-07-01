@@ -1,9 +1,9 @@
-import { BadgeCheck, LoaderCircle, Plus, Save, Trash2 } from "lucide-react";
+import { BadgeCheck, Copy, LoaderCircle, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { AudioCard, EmptyState, FieldLabel, ToggleTile } from "../components";
 import { requestJson, stringifyOptionList } from "../lib";
-import type { Notice, ProjectConfig, SpeakerProfile } from "../types";
+import type { Notice, ProjectConfig, SpeakerCopyPayload, SpeakerProfile, SpeakerProfilePayload } from "../types";
 
 type SpeakerFormState = {
   name: string;
@@ -62,6 +62,7 @@ function buildForm(profile?: SpeakerProfile): SpeakerFormState {
 
 export function RolesPage(props: {
   project: ProjectConfig | null;
+  projects: ProjectConfig[];
   speakers: SpeakerProfile[];
   setNotice: (notice: Notice) => void;
   onRefresh: () => Promise<void>;
@@ -72,6 +73,17 @@ export function RolesPage(props: {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [sourceProjectId, setSourceProjectId] = useState("");
+  const [sourceSpeakerName, setSourceSpeakerName] = useState("__all__");
+  const [sourceSpeakers, setSourceSpeakers] = useState<SpeakerProfile[]>([]);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
+  const [isSourceSpeakersLoading, setIsSourceSpeakersLoading] = useState(false);
+  const [isCopyingSpeaker, setIsCopyingSpeaker] = useState(false);
+
+  const sourceProjects = useMemo(
+    () => props.projects.filter((project) => project.id !== props.project?.id),
+    [props.project?.id, props.projects],
+  );
 
   const activeSpeaker = useMemo(
     () =>
@@ -86,6 +98,60 @@ export function RolesPage(props: {
     setActiveSpeakerName("");
     setSelectedFile(null);
   }, [props.project?.id]);
+
+  useEffect(() => {
+    const nextSourceProjectId = sourceProjects.find((project) => project.id === sourceProjectId)
+      ?.id ?? sourceProjects[0]?.id ?? "";
+    if (nextSourceProjectId !== sourceProjectId) {
+      setSourceProjectId(nextSourceProjectId);
+    }
+  }, [sourceProjectId, sourceProjects]);
+
+  useEffect(() => {
+    let canceled = false;
+    if (!sourceProjectId) {
+      setSourceSpeakers([]);
+      setSourceSpeakerName("__all__");
+      return () => {
+        canceled = true;
+      };
+    }
+
+    setIsSourceSpeakersLoading(true);
+    requestJson<SpeakerProfilePayload>(
+      `/speakers/profiles?project_id=${encodeURIComponent(sourceProjectId)}`,
+    )
+      .then((payload) => {
+        if (canceled) {
+          return;
+        }
+        setSourceSpeakers(payload.items);
+        setSourceSpeakerName((current) =>
+          current === "__all__" || payload.items.some((speaker) => speaker.name === current)
+            ? current
+            : "__all__",
+        );
+      })
+      .catch((error) => {
+        if (canceled) {
+          return;
+        }
+        setSourceSpeakers([]);
+        props.setNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "加载来源项目角色失败。",
+        });
+      })
+      .finally(() => {
+        if (!canceled) {
+          setIsSourceSpeakersLoading(false);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [sourceProjectId]);
 
   useEffect(() => {
     if (isCreating || !props.project) {
@@ -201,6 +267,49 @@ export function RolesPage(props: {
     }
   }
 
+  async function copySpeakersFromProject() {
+    if (!props.project) {
+      props.setNotice({ tone: "error", message: "请先选择目标项目。" });
+      return;
+    }
+    if (!sourceProjectId) {
+      props.setNotice({ tone: "error", message: "请先选择来源项目。" });
+      return;
+    }
+    if (sourceSpeakers.length === 0) {
+      props.setNotice({ tone: "error", message: "来源项目还没有可复用角色。" });
+      return;
+    }
+
+    setIsCopyingSpeaker(true);
+    try {
+      const payload = await requestJson<SpeakerCopyPayload>("/speakers/copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_project_id: sourceProjectId,
+          target_project_id: props.project.id,
+          speaker_names: sourceSpeakerName === "__all__" ? [] : [sourceSpeakerName],
+          overwrite: overwriteExisting,
+        }),
+      });
+      setIsCreating(false);
+      setActiveSpeakerName(payload.items[0]?.name ?? "");
+      props.setNotice({
+        tone: "success",
+        message: `已复用 ${payload.items.length} 个角色到项目 ${props.project.name}。`,
+      });
+      await props.onRefresh();
+    } catch (error) {
+      props.setNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : "复用角色失败。",
+      });
+    } finally {
+      setIsCopyingSpeaker(false);
+    }
+  }
+
   function startCreateSpeaker() {
     setIsCreating(true);
     setActiveSpeakerName("");
@@ -233,6 +342,76 @@ export function RolesPage(props: {
           <Plus className="h-4 w-4" />
           新建角色
         </button>
+
+        <div className="mt-4 rounded-[24px] border border-white/70 bg-slate-100/55 p-4 shadow-inner">
+          <div className="flex items-center justify-between gap-3">
+            <div className="eyebrow">复用角色</div>
+            <Copy className="h-4 w-4 text-slate-500" />
+          </div>
+          <div className="mt-4 space-y-3">
+            <FieldLabel label="来源项目">
+              <select
+                className="field-shell w-full"
+                disabled={sourceProjects.length === 0}
+                onChange={(event) => setSourceProjectId(event.target.value)}
+                value={sourceProjectId}
+              >
+                {sourceProjects.length === 0 ? (
+                  <option value="">暂无其他项目</option>
+                ) : null}
+                {sourceProjects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </FieldLabel>
+            <FieldLabel label="来源角色">
+              <select
+                className="field-shell w-full"
+                disabled={!sourceProjectId || sourceSpeakers.length === 0 || isSourceSpeakersLoading}
+                onChange={(event) => setSourceSpeakerName(event.target.value)}
+                value={sourceSpeakerName}
+              >
+                <option value="__all__">
+                  {isSourceSpeakersLoading ? "加载中" : "全部角色"}
+                </option>
+                {sourceSpeakers.map((speaker) => (
+                  <option key={speaker.name} value={speaker.name}>
+                    {speaker.name}
+                  </option>
+                ))}
+              </select>
+            </FieldLabel>
+            <label className="flex items-center gap-2 text-sm font-semibold text-slate-600">
+              <input
+                checked={overwriteExisting}
+                className="h-4 w-4 accent-slate-900"
+                onChange={(event) => setOverwriteExisting(event.target.checked)}
+                type="checkbox"
+              />
+              覆盖当前项目同名角色
+            </label>
+            <button
+              className="action-button action-button-secondary w-full justify-center"
+              disabled={
+                isCopyingSpeaker ||
+                isSourceSpeakersLoading ||
+                !sourceProjectId ||
+                sourceSpeakers.length === 0
+              }
+              onClick={() => void copySpeakersFromProject()}
+              type="button"
+            >
+              {isCopyingSpeaker ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+              复用到当前项目
+            </button>
+          </div>
+        </div>
 
         <div className="mt-4 space-y-3">
           {props.speakers.length === 0 ? (

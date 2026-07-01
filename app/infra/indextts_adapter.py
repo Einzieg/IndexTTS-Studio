@@ -171,6 +171,8 @@ class RemoteGradioAdapter:
         self.base_url = settings.model.gradio_base_url.rstrip("/")
         self.api_prefix = settings.model.gradio_api_prefix.rstrip("/")
         self.api_name = settings.model.gradio_api_name
+        self.request_timeout_seconds = settings.model.gradio_request_timeout_seconds
+        self.stream_timeout_seconds = settings.model.gradio_stream_timeout_seconds
         self._lock = threading.Lock()
         self._info_cache: dict[str, Any] | None = None
 
@@ -419,7 +421,10 @@ class RemoteGradioAdapter:
     def _read_sse_terminal_event(self, url: str) -> tuple[str, Any]:
         request_obj = urllib_request.Request(url, method="GET")
         try:
-            with urllib_request.urlopen(request_obj, timeout=300) as response:
+            with urllib_request.urlopen(
+                request_obj,
+                timeout=self.stream_timeout_seconds,
+            ) as response:
                 event_type: str | None = None
                 event_data: str | None = None
                 for raw_line in response:
@@ -438,7 +443,14 @@ class RemoteGradioAdapter:
                     raise SynthesisError("Remote Gradio queue did not return an event type.")
                 payload = json.loads(event_data) if event_data and event_data != "null" else None
                 return event_type, payload
+        except TimeoutError as exc:
+            raise SynthesisError(
+                "Timed out while waiting for the remote Gradio queue stream. "
+                f"Configured timeout: {self.stream_timeout_seconds} seconds."
+            ) from exc
         except urllib_error.URLError as exc:
+            raise SynthesisError(f"Failed to read Gradio queue stream: {exc}") from exc
+        except OSError as exc:
             raise SynthesisError(f"Failed to read Gradio queue stream: {exc}") from exc
 
     def _extract_remote_output(self, payload: Any) -> dict[str, Any]:
@@ -462,10 +474,20 @@ class RemoteGradioAdapter:
         url = str(remote_output["url"])
         request_obj = urllib_request.Request(url, method="GET")
         try:
-            with urllib_request.urlopen(request_obj, timeout=300) as response:
+            with urllib_request.urlopen(
+                request_obj,
+                timeout=self.stream_timeout_seconds,
+            ) as response:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(response.read())
+        except TimeoutError as exc:
+            raise SynthesisError(
+                "Timed out while downloading remote audio output. "
+                f"Configured timeout: {self.stream_timeout_seconds} seconds."
+            ) from exc
         except urllib_error.URLError as exc:
+            raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
+        except OSError as exc:
             raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
 
     def _request_json(
@@ -487,14 +509,24 @@ class RemoteGradioAdapter:
             request_headers.update(headers)
         request_obj = urllib_request.Request(url, data=body, method=method, headers=request_headers)
         try:
-            with urllib_request.urlopen(request_obj, timeout=60) as response:
+            with urllib_request.urlopen(
+                request_obj,
+                timeout=self.request_timeout_seconds,
+            ) as response:
                 content = response.read().decode("utf-8")
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
             raise SynthesisError(
                 f"Remote Gradio request failed with HTTP {exc.code}: {detail or exc.reason}"
             ) from exc
+        except TimeoutError as exc:
+            raise SynthesisError(
+                "Timed out while calling remote Gradio. "
+                f"Configured timeout: {self.request_timeout_seconds} seconds."
+            ) from exc
         except urllib_error.URLError as exc:
+            raise SynthesisError(f"Remote Gradio request failed: {exc}") from exc
+        except OSError as exc:
             raise SynthesisError(f"Remote Gradio request failed: {exc}") from exc
         if not content:
             return None

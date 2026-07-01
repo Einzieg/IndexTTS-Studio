@@ -115,6 +115,13 @@ class EpisodeUpsertRequest(BaseModel):
     description: str | None = None
 
 
+class CopySpeakersRequest(BaseModel):
+    source_project_id: str
+    target_project_id: str
+    speaker_names: list[str] = Field(default_factory=list)
+    overwrite: bool = False
+
+
 class StudioTableSaveRequest(BaseModel):
     project_id: str
     episode_id: str

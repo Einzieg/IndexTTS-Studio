@@ -14,7 +14,7 @@ import {
   WifiOff,
   type LucideIcon,
 } from "lucide-react";
-import { startTransition, useEffect, useEffectEvent, useMemo, useState } from "react";
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
 import { FieldLabel, MetricChip } from "./components";
 import {
@@ -52,6 +52,12 @@ type NavItem = {
   title: string;
   description?: string;
   icon: LucideIcon;
+};
+
+type RefreshOverviewOptions = {
+  projectId?: string;
+  episodeId?: string;
+  includeSpeakers?: boolean;
 };
 
 function HealthStatusIcon(props: { status?: string | null }) {
@@ -134,6 +140,8 @@ export default function App() {
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isJobLinesLoading, setIsJobLinesLoading] = useState(false);
+  const overviewRequestId = useRef(0);
+  const speakerRequestId = useRef(0);
 
   const activeProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -259,40 +267,76 @@ export default function App() {
     window.localStorage.removeItem(key);
   }, [activeProject, selectedEpisodeId]);
 
-  const refreshOverview = useEffectEvent(async () => {
+  const loadSpeakersForProject = useEffectEvent(async (projectId: string) => {
+    const requestId = ++speakerRequestId.current;
+    if (!projectId) {
+      startTransition(() => setSpeakers([]));
+      return;
+    }
+
+    try {
+      const speakerData = await requestJson<SpeakerProfilePayload>(
+        `/speakers/profiles?project_id=${encodeURIComponent(projectId)}`,
+      );
+      if (requestId !== speakerRequestId.current) {
+        return;
+      }
+      startTransition(() => setSpeakers(speakerData.items));
+    } catch (error) {
+      if (requestId !== speakerRequestId.current || error instanceof UnauthorizedError) {
+        return;
+      }
+      startTransition(() => setSpeakers([]));
+      setNotice({
+        tone: "error",
+        message: error instanceof Error ? error.message : "加载角色数据失败。",
+      });
+    }
+  });
+
+  const refreshOverview = useEffectEvent(async (options?: RefreshOverviewOptions) => {
+    const requestId = ++overviewRequestId.current;
     setIsRefreshing(true);
     try {
       const healthData = await requestJson<HealthPayload>("/health");
+      if (requestId !== overviewRequestId.current) {
+        return;
+      }
       setHealth(healthData);
 
       const [projectData, jobData] = await Promise.all([
         requestJson<ProjectListPayload>("/projects"),
         requestJson<JobListPayload>("/jobs"),
       ]);
+      if (requestId !== overviewRequestId.current) {
+        return;
+      }
 
+      const preferredProjectId = options?.projectId ?? selectedProjectId;
       const effectiveProjectId =
-        projectData.items.find((item) => item.id === selectedProjectId)?.id ??
+        projectData.items.find((item) => item.id === preferredProjectId)?.id ??
         projectData.items[0]?.id ??
         "";
-
-      let speakerItems: SpeakerProfilePayload["items"] = [];
-      let speakerLoadError: Error | null = null;
-      if (effectiveProjectId) {
-        try {
-          const speakerData = await requestJson<SpeakerProfilePayload>(
-            `/speakers/profiles?project_id=${encodeURIComponent(effectiveProjectId)}`,
-          );
-          speakerItems = speakerData.items;
-        } catch (error) {
-          speakerLoadError =
-            error instanceof Error ? error : new Error("加载角色数据失败。");
-        }
-      }
+      const effectiveProject = projectData.items.find((item) => item.id === effectiveProjectId);
+      const effectiveEpisodeId =
+        options?.episodeId !== undefined
+          ? (effectiveProject?.episodes.find((episode) => episode.id === options.episodeId)?.id ?? "")
+          : undefined;
 
       startTransition(() => {
         setProjects(projectData.items);
-        setSelectedProjectId(effectiveProjectId);
-        setSpeakers(speakerItems);
+        setSelectedProjectId((currentProjectId) => {
+          if (options?.projectId !== undefined) {
+            return effectiveProjectId;
+          }
+          if (projectData.items.some((item) => item.id === currentProjectId)) {
+            return currentProjectId;
+          }
+          return effectiveProjectId;
+        });
+        if (effectiveEpisodeId !== undefined) {
+          setSelectedEpisodeId(effectiveEpisodeId);
+        }
         setJobs(jobData.items);
 
         if (!selectedJobId && jobData.items[0]) {
@@ -303,11 +347,8 @@ export default function App() {
         }
       });
 
-      if (speakerLoadError) {
-        setNotice({
-          tone: "error",
-          message: speakerLoadError.message,
-        });
+      if (options?.includeSpeakers) {
+        await loadSpeakersForProject(effectiveProjectId);
       }
     } catch (error) {
       if (error instanceof UnauthorizedError) {
@@ -319,7 +360,9 @@ export default function App() {
         message: error instanceof Error ? error.message : "刷新概览失败。",
       });
     } finally {
-      setIsRefreshing(false);
+      if (requestId === overviewRequestId.current) {
+        setIsRefreshing(false);
+      }
     }
   });
 
@@ -357,7 +400,7 @@ export default function App() {
     if (authSession === null || (authEnabled && !isAuthenticated)) {
       return;
     }
-    void refreshOverview();
+    void loadSpeakersForProject(selectedProjectId);
   }, [selectedProjectId, authSession, authEnabled, isAuthenticated]);
 
   useEffect(() => {
@@ -400,7 +443,7 @@ export default function App() {
         tone: "success",
         message: payload.data.username ? `欢迎回来，${payload.data.username}。` : "登录成功。",
       });
-      await refreshOverview();
+      await refreshOverview({ includeSpeakers: true });
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "登录失败。");
     } finally {
@@ -521,7 +564,7 @@ export default function App() {
               <button
                 className="action-button action-button-ghost px-3 py-2 text-xs"
                 disabled={isRefreshing}
-                onClick={() => void refreshOverview()}
+                onClick={() => void refreshOverview({ includeSpeakers: true })}
                 type="button"
               >
                 {isRefreshing ? (
@@ -658,8 +701,9 @@ export default function App() {
 
             {page === "roles" ? (
               <RolesPage
-                onRefresh={refreshOverview}
+                onRefresh={() => loadSpeakersForProject(activeProject?.id ?? "")}
                 project={activeProject}
+                projects={projects}
                 setNotice={setNotice}
                 speakers={speakers}
               />

@@ -49,6 +49,10 @@ export type SpeakerProfilePayload = {
   items: SpeakerProfile[];
 };
 
+export type SpeakerCopyPayload = {
+  items: SpeakerProfile[];
+};
+
 export type EpisodeConfig = {
   id: string;
   name: string;

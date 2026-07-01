@@ -5,6 +5,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.core.container import ServiceContainer
+from app.domain.models import MAX_SCRIPT_LINE_TEXT_CHARS
 from app.main import create_app
 
 
@@ -46,6 +47,28 @@ def test_inline_job_api_queues_page_authored_lines(container: ServiceContainer) 
         lines = lines_response.json()["data"]["items"]
         assert len(lines) == 2
         assert all(line["status"] == "done" for line in lines)
+
+
+def test_inline_job_api_rejects_overlong_line(container: ServiceContainer) -> None:
+    with TestClient(create_app(container)) as client:
+        response = client.post(
+            "/jobs/from-lines",
+            json={
+                "title": "超长台词",
+                "force": True,
+                "lines": [
+                    {
+                        "speaker": "主角A",
+                        "text": "长" * (MAX_SCRIPT_LINE_TEXT_CHARS + 1),
+                        "scene": "web",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert f"超过单行上限 {MAX_SCRIPT_LINE_TEXT_CHARS} 字" in response.json()["message"]
 
 
 def test_inline_job_api_respects_project_and_episode_context(

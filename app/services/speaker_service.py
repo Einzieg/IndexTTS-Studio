@@ -169,6 +169,81 @@ class SpeakerService:
         self._remove_managed_reference_dir(normalized_name, project_id=project_id)
         return {"name": normalized_name}
 
+    def copy_speakers(
+        self,
+        *,
+        source_project_id: str,
+        target_project_id: str,
+        speaker_names: list[str] | None = None,
+        overwrite: bool = False,
+    ) -> list[dict[str, Any]]:
+        source_project = self.project_service.get_project(source_project_id)
+        target_project = self.project_service.get_project(target_project_id)
+        if source_project.id == target_project.id:
+            raise ValidationError("Source and target projects must be different.")
+
+        source_configs = self._read_raw_configs(project_id=source_project.id)
+        target_configs = self._read_raw_configs(project_id=target_project.id)
+        selected_names = [name.strip() for name in speaker_names or [] if name.strip()]
+        if not selected_names:
+            selected_names = sorted(source_configs)
+
+        if not selected_names:
+            raise ValidationError("Source project has no speakers to copy.")
+
+        missing_names = [name for name in selected_names if name not in source_configs]
+        if missing_names:
+            raise SpeakerNotFoundError(
+                f"Speaker `{missing_names[0]}` does not exist in source project."
+            )
+
+        conflicts = [name for name in selected_names if name in target_configs]
+        if conflicts and not overwrite:
+            raise ValidationError(
+                f"Speaker `{conflicts[0]}` already exists in target project."
+            )
+
+        copied_profiles: list[dict[str, Any]] = []
+        for speaker_name in selected_names:
+            if speaker_name in target_configs:
+                self._remove_managed_reference_dir(speaker_name, project_id=target_project.id)
+
+            source_schema = SpeakerConfigSchema.model_validate(source_configs[speaker_name])
+            copied_config = source_schema.model_dump(exclude_none=True)
+            copied_config["ref_audio"] = self._copy_referenced_audio(
+                source_schema.ref_audio,
+                speaker_name=speaker_name,
+                target_project_id=target_project.id,
+            )
+            if source_schema.emo_audio:
+                copied_config["emo_audio"] = self._copy_referenced_audio(
+                    source_schema.emo_audio,
+                    speaker_name=speaker_name,
+                    target_project_id=target_project.id,
+                )
+
+            target_configs[speaker_name] = copied_config
+            copied_profiles.append(
+                SpeakerProfile(
+                    name=speaker_name,
+                    ref_audio=self.storage.resolve_path(copied_config["ref_audio"]),
+                    options=GenerationOptions(
+                        **{
+                            key: value
+                            for key, value in copied_config.items()
+                            if key not in {"ref_audio", "emo_audio"}
+                        },
+                        emo_audio=self.storage.resolve_path(copied_config["emo_audio"])
+                        if copied_config.get("emo_audio")
+                        else None,
+                    ),
+                )
+            )
+
+        self._write_raw_configs(target_configs, project_id=target_project.id)
+        self._clear_cache(target_project.id)
+        return [self._serialize_profile(profile) for profile in copied_profiles]
+
     def _serialize_profile(self, speaker: SpeakerProfile) -> dict[str, Any]:
         payload = {
             "name": speaker.name,
@@ -208,6 +283,28 @@ class SpeakerService:
         )
         target = self._project_paths(project_id).refs_dir / safe_speaker / safe_name
         return self.storage.write_bytes(target, payload)
+
+    def _copy_referenced_audio(
+        self,
+        audio_path: str,
+        *,
+        speaker_name: str,
+        target_project_id: str,
+    ) -> str:
+        source_path = self.storage.resolve_path(audio_path)
+        if not source_path.exists() or not source_path.is_file():
+            raise MissingFileError(f"Referenced audio was not found: {source_path}")
+
+        safe_speaker = self.storage.sanitize_fragment(speaker_name, default="speaker")
+        safe_name = self.storage.sanitize_filename(
+            source_path.name,
+            default_stem=f"{safe_speaker}_ref",
+            default_suffix=source_path.suffix or ".wav",
+        )
+        target_path = self._project_paths(target_project_id).refs_dir / safe_speaker / safe_name
+        self.storage.ensure_parent(target_path)
+        shutil.copy2(source_path, target_path)
+        return self.storage.to_project_relative(target_path)
 
     def _read_raw_configs(self, *, project_id: str | None = None) -> dict[str, dict[str, Any]]:
         speakers_path = self._project_paths(project_id).speakers_file
