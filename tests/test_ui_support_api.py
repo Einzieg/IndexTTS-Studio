@@ -37,3 +37,50 @@ def test_ui_support_endpoints(container: ServiceContainer) -> None:
 
         ui_response = client.get("/ui")
         assert ui_response.status_code == 200
+
+
+def test_script_preview_rejects_paths_outside_managed_scripts(
+    container: ServiceContainer,
+    studio_root,
+) -> None:
+    outside_script = studio_root / "outside.csv"
+    outside_script.write_text(
+        "id,scene,speaker,text\n1,001,主角A,outside script\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(container)) as client:
+        response = client.get(
+            "/scripts/preview",
+            params={"script_path": str(outside_script)},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "managed scripts directory" in response.json()["message"]
+
+
+def test_script_preview_returns_422_for_invalid_script_line(
+    container: ServiceContainer,
+) -> None:
+    bad_script = container.settings.paths.scripts_dir / "bad_timing.json"
+    bad_script.write_text(
+        (
+            "{\n"
+            '  "items": [\n'
+            '    {"id": "1", "speaker": "主角A", "text": "bad timing", "start_ms": "bad"}\n'
+            "  ]\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(container)) as client:
+        response = client.get(
+            "/scripts/preview",
+            params={"script_path": str(bad_script)},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "Invalid script line `1`" in response.json()["message"]

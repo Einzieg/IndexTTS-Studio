@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -75,7 +76,7 @@ class ScriptService:
         safe_title = self.storage.sanitize_fragment(title, default="web_script")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         target_dir = base_dir or (self.storage.settings.paths.scripts_dir / "drafts")
-        script_path = target_dir / f"{safe_title}_{timestamp}.json"
+        script_path = target_dir / f"{safe_title}_{timestamp}_{uuid4().hex[:8]}.json"
         payload = {
             "lines": [line.model_dump(mode="json", exclude_none=True) for line in lines],
         }
@@ -112,18 +113,24 @@ class ScriptService:
     def _build_line(self, row: dict[str, Any]) -> ScriptLine:
         normalized = {key: self._normalize_value(value) for key, value in row.items()}
         override = self._extract_line_override(normalized)
-        line = ScriptLine.model_validate(
-            {
-                "id": normalized.get("id"),
-                "scene": normalized.get("scene"),
-                "speaker": normalized.get("speaker"),
-                "text": normalized.get("text"),
-                "output_name": normalized.get("output_name"),
-                "override": override,
-                "start_ms": normalized.get("start_ms"),
-                "end_ms": normalized.get("end_ms"),
-            }
-        )
+        try:
+            line = ScriptLine.model_validate(
+                {
+                    "id": normalized.get("id"),
+                    "scene": normalized.get("scene"),
+                    "speaker": normalized.get("speaker"),
+                    "text": normalized.get("text"),
+                    "output_name": normalized.get("output_name"),
+                    "override": override,
+                    "start_ms": normalized.get("start_ms"),
+                    "end_ms": normalized.get("end_ms"),
+                }
+            )
+        except PydanticValidationError as exc:
+            line_id = normalized.get("id") or "<unknown>"
+            raise ScriptValidationError(
+                f"Invalid script line `{line_id}`: {exc.errors(include_url=False)}"
+            ) from exc
         if not line.id:
             raise ScriptValidationError("Every script row must provide a non-empty `id`.")
         if not line.speaker:

@@ -47,11 +47,12 @@ INDEXTTS_STUDIO_BACKEND=remote_gradio
 INDEXTTS_STUDIO_GRADIO_BASE_URL=http://127.0.0.1:7861
 ```
 
-3. Build the Web UI if `web/dist` is missing or if you changed frontend code:
+3. Build the Web UI if `web/dist` is missing or if you changed frontend code. The frontend requires `Node.js >= 20.19`:
 
 ```bash
 cd web
 npm install
+npm run typecheck
 npm run build
 ```
 
@@ -87,16 +88,27 @@ The repository now includes:
 - [`docker/index-tts/Dockerfile`](./docker/index-tts/Dockerfile)
 - [`docker/index-tts/entrypoint.sh`](./docker/index-tts/entrypoint.sh)
 
-The default Compose flow now bootstraps both containers from this repository:
+The default Compose flow starts only `studio`. Use this when IndexTTS Gradio already runs on another host or machine:
 
 ```bash
-docker compose up --build
+docker compose up --build studio
 ```
 
 What happens in this setup:
 
 - `studio` is built from this repository and serves the API + Web UI
-- `index-tts` is also built from this repository through [`docker/index-tts/Dockerfile`](./docker/index-tts/Dockerfile)
+- `index-tts` is not started by default, so this host does not unexpectedly download models or reserve GPU
+- `.env` is optional; without it the app uses built-in defaults, though real deployments should still copy from `.env.example`
+
+If you want the bundled upstream `index-tts` container, explicitly enable the `bundled` profile:
+
+```bash
+docker compose --profile bundled up --build
+```
+
+In the bundled setup:
+
+- `index-tts` is built from this repository through [`docker/index-tts/Dockerfile`](./docker/index-tts/Dockerfile)
 - the upstream official `index-tts` source is cloned automatically during image build
 - LFS example audio is intentionally skipped during build, so upstream Git LFS quota overruns do not block container creation
 - on first container startup, checkpoints are downloaded automatically into a persistent Docker volume
@@ -105,7 +117,7 @@ What happens in this setup:
 - during the first checkpoint bootstrap, `index-tts` is treated as starting rather than failed as long as the bootstrap process is still running
 - bootstrap logs now periodically report downloaded size, file count, and remaining required files so you can distinguish normal progress from a stall
 
-The bundled Compose config requests GPU access for the `index-tts` service with `gpus: all`.
+The bundled Compose config requests GPU access for the `index-tts` service only when the `bundled` profile is enabled.
 Docker and local runs now share the same root `.env`; local values such as `127.0.0.1` stay in the standard keys, while container-only differences are overridden with `INDEXTTS_STUDIO_DOCKER_*`.
 You can adjust the relevant settings in [`.env`](./.env) or [`.env.example`](./.env.example):
 
@@ -113,10 +125,10 @@ You can adjust the relevant settings in [`.env`](./.env) or [`.env.example`](./.
 INDEXTTS_STUDIO_DOCKER_HOST=0.0.0.0
 INDEXTTS_STUDIO_DOCKER_PORT=8000
 INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP=false
-INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://index-tts:7861
+INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://host.docker.internal:7861
 INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
-INDEXTTS_UPSTREAM_REF=main
+INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
 INDEXTTS_MODEL_SOURCE=auto
 INDEXTTS_MODEL_REPO=IndexTeam/IndexTTS-2
 INDEXTTS_MODELSCOPE_MODEL_ID=IndexTeam/IndexTTS-2
@@ -133,19 +145,21 @@ Notes:
 - if you want to run the `official` backend inside the `studio` container, you will need a separate CUDA-enabled image rather than the current slim Python image
 - Docker still needs host-side GPU support to be available first, for example NVIDIA Container Toolkit on Linux or Docker Desktop GPU support for Linux containers
 - `INDEXTTS_MODEL_SOURCE=auto` tries Hugging Face first and then falls back to ModelScope
+- `INDEXTTS_UPSTREAM_REF` defaults to a pinned commit for reproducible builds; set it to a branch or tag only when you intentionally want to track upstream changes
+- by default, the `studio` container reaches Gradio through `host.docker.internal:7861`; if you enable the bundled model container, set `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://index-tts:7861`
 - if you have a Hugging Face token, put it in the root `.env` as `HF_TOKEN=` for more reliable downloads and higher limits
 - `HF_ENDPOINT` is also configured through the root `.env`; leave it blank unless you are intentionally using a mirror endpoint
 - `docker compose` now reads the same `.env`, with only a few container-network overrides layered on top, so there is no separate `.env.docker` to maintain
-- if you want to use only the Studio container, run `docker compose up studio`
+- the default starts only `studio`; use `docker compose --profile bundled up --build` for the bundled model container
 - if Docker Hub access is flaky in your environment, you can point `INDEXTTS_CUDA_BASE_IMAGE` to a mirrored CUDA base image
 
-The containerized default uses `remote_gradio` and targets:
+The containerized default uses `remote_gradio` and targets the host gateway:
 
 ```text
-http://index-tts:7861
+http://host.docker.internal:7861
 ```
 
-So the Studio container can always reach the bundled `index-tts` service by name on the internal `indextts-studio-net` network.
+When the `bundled` profile is enabled, set `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://index-tts:7861` so the Studio container reaches the bundled `index-tts` service by name on the internal `indextts-studio-net` network.
 
 If your `index-tts` container is started separately, you can also attach it to the same network manually, for example:
 
@@ -212,7 +226,7 @@ Notes:
 
 - when `INDEXTTS_STUDIO_AUTH_ENABLED=true`, unauthenticated users will see the login page before entering `/ui`
 - credentials come from the server-side root `.env`
-- if `INDEXTTS_STUDIO_AUTH_SESSION_SECRET` is left blank, the app derives a signing secret from the project path and configured credentials; for real deployments, setting an explicit secret is recommended
+- if `INDEXTTS_STUDIO_AUTH_SESSION_SECRET` is left blank, the app generates a random signing secret on every server process start; set an explicit secret in real deployments so restarts do not invalidate all sessions
 - if you expose the service over HTTPS, also set `INDEXTTS_STUDIO_AUTH_SECURE_COOKIE=true`
 - public routes are intentionally limited to `/`, `/ui`, `/health`, and `/auth/*`
 
@@ -343,8 +357,9 @@ git push origin v0.2.0
 The release workflow will automatically:
 
 - run `uv run pytest -q`
+- typecheck the `web` frontend
 - build the `web` frontend
-- validate `docker compose config`
+- validate both default and `bundled` `docker compose config`
 - publish the `studio` image to GHCR
 - publish the `index-tts` image to GHCR
 - create the matching GitHub Release

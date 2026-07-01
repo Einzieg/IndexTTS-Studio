@@ -45,6 +45,10 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Typecheck frontend
+        working-directory: web
+        run: npm run typecheck
+
       - name: Build frontend
         working-directory: web
         run: npm run build
@@ -60,5 +64,8 @@ jobs:
       - name: Prepare .env
         run: cp .env.example .env
 
-      - name: Render docker compose config
+      - name: Render default docker compose config
         run: docker compose config > /tmp/docker-compose.rendered.yml
+
+      - name: Render bundled docker compose config
+        run: docker compose --profile bundled config > /tmp/docker-compose.bundled.yml

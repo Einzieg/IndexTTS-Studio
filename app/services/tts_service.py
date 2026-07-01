@@ -91,6 +91,8 @@ class TTSService:
         self,
         speaker_profile: SpeakerProfile,
         override: Mapping[str, Any] | None = None,
+        *,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         merged = dict(self.settings.generation.as_dict())
         merged.update(speaker_profile.options.as_infer_kwargs())
@@ -100,12 +102,17 @@ class TTSService:
                 continue
             if key == "emo_audio":
                 merged.pop("emo_vector", None)
-                merged[key] = self.storage.resolve_path(str(value))
+                merged[key] = value
             elif key == "emo_vector":
                 merged.pop("emo_audio", None)
                 merged[key] = value
             else:
                 merged[key] = value
+        if merged.get("emo_audio") is not None:
+            merged["emo_audio"] = self._resolve_allowed_emo_audio(
+                merged["emo_audio"],
+                project_id=project_id,
+            )
         return merged
 
     def _synthesize(
@@ -143,7 +150,11 @@ class TTSService:
             )
 
         speaker = self.speaker_service.get_speaker(speaker_name, project_id=project_id)
-        merged_options = self.merge_generation_options(speaker, override=override)
+        merged_options = self.merge_generation_options(
+            speaker,
+            override=override,
+            project_id=project_id,
+        )
         with self._synthesis_lock:
             adapter_result = self.adapter.synthesize(
                 ref_audio=speaker.ref_audio,
@@ -170,3 +181,32 @@ class TTSService:
             else:
                 serialized[key] = value
         return serialized
+
+    def _resolve_allowed_emo_audio(
+        self,
+        value: Any,
+        *,
+        project_id: str | None,
+    ) -> Path:
+        path = value if isinstance(value, Path) else self.storage.resolve_path(str(value))
+        resolved = path.resolve()
+        if resolved.suffix.lower() not in {".wav", ".mp3"}:
+            raise ValidationError("Emotion audio must be a `.wav` or `.mp3` file.")
+
+        allowed_roots = [self.settings.paths.refs_dir.resolve()]
+        if project_id:
+            allowed_roots.append(self.project_service.project_paths(project_id).refs_dir.resolve())
+
+        if not any(self._is_under_root(resolved, root) for root in allowed_roots):
+            raise ValidationError("Emotion audio must be stored under the managed refs directory.")
+        if not resolved.exists() or not resolved.is_file():
+            raise ValidationError(f"Emotion audio was not found: {resolved}")
+        return resolved
+
+    @staticmethod
+    def _is_under_root(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root)
+        except ValueError:
+            return False
+        return True

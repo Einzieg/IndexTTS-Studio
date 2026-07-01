@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import hashlib
+import secrets
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -28,7 +28,7 @@ def _parse_int(value: str | None, default: int) -> int:
 
 
 def _resolve_path(value: str | None, *, root: Path, default: Path) -> Path:
-    if value is None:
+    if value is None or not value.strip():
         candidate = default
     else:
         candidate = Path(value)
@@ -283,9 +283,7 @@ def load_settings() -> AppSettings:
     )
     auth_secret = os.getenv("INDEXTTS_STUDIO_AUTH_SESSION_SECRET", "").strip()
     if auth_enabled and not auth_secret:
-        auth_secret = hashlib.sha256(
-            f"{project_root}:{auth_username}:{auth_password}".encode("utf-8")
-        ).hexdigest()
+        auth_secret = secrets.token_urlsafe(32)
     auth_same_site = os.getenv("INDEXTTS_STUDIO_AUTH_SAME_SITE", "lax").strip().lower()
     if auth_same_site not in {"lax", "strict", "none"}:
         auth_same_site = "lax"

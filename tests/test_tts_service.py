@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from app.core.exceptions import ValidationError
 from app.core.container import ServiceContainer
 
 
@@ -68,3 +71,18 @@ def test_tts_service_applies_line_override(container: ServiceContainer) -> None:
     assert result.used_options["interval_silence"] == 0.33
     assert result.used_options["emo_vector"] == [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
     assert "emo_audio" not in result.used_options
+
+
+def test_tts_service_rejects_emo_audio_outside_managed_refs(
+    container: ServiceContainer,
+    studio_root: Path,
+) -> None:
+    outside_audio = studio_root / "outside.wav"
+    outside_audio.write_bytes(b"not a real wav")
+    speaker = container.speaker_service.get_speaker("主角A")
+
+    with pytest.raises(ValidationError, match="managed refs"):
+        container.tts_service.merge_generation_options(
+            speaker,
+            override={"emo_audio": str(outside_audio)},
+        )

@@ -7,7 +7,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.core.config import AppSettings
+from app.core.exceptions import SynthesisError
+from app.infra import indextts_adapter as indextts_adapter_module
 from app.infra.indextts_adapter import RemoteGradioAdapter
 
 
@@ -32,6 +36,8 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
     last_payload: dict[str, Any] | None = None
     upload_count = 0
     uploaded_paths: list[str] = []
+    call_response: Any = {"event_id": "event-1"}
+    sse_body: bytes | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/config":
@@ -71,7 +77,9 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
                     "__type__": "update",
                 }
             ]
-            body = f"event: complete\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+            body = _FakeGradioHandler.sse_body or (
+                f"event: complete\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Content-Length", str(len(body)))
@@ -84,6 +92,14 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(self.response_wav)))
             self.end_headers()
             self.wfile.write(self.response_wav)
+            return
+        if self.path == "/invalid-json":
+            body = b"{"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         self.send_error(404)
 
@@ -100,7 +116,7 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
 
         if self.path == "/gradio_api/call/gen_single":
             _FakeGradioHandler.last_payload = json.loads(body.decode("utf-8"))
-            self._send_json({"event_id": "event-1"})
+            self._send_json(_FakeGradioHandler.call_response)
             return
 
         self.send_error(404)
@@ -121,6 +137,8 @@ def _reset_fake_server_state() -> None:
     _FakeGradioHandler.last_payload = None
     _FakeGradioHandler.upload_count = 0
     _FakeGradioHandler.uploaded_paths = []
+    _FakeGradioHandler.call_response = {"event_id": "event-1"}
+    _FakeGradioHandler.sse_body = None
 
 
 def test_remote_gradio_adapter_downloads_output(
@@ -212,3 +230,142 @@ def test_remote_gradio_adapter_reuploads_reference_audio_for_each_request(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_remote_gradio_adapter_rejects_invalid_json_response(
+    studio_settings: AppSettings,
+) -> None:
+    _reset_fake_server_state()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        adapter = RemoteGradioAdapter(studio_settings)
+
+        with pytest.raises(SynthesisError, match="invalid JSON"):
+            adapter._request_json("GET", f"{adapter.base_url}/invalid-json")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_gradio_adapter_rejects_missing_event_id(
+    studio_settings: AppSettings,
+    studio_root: Path,
+) -> None:
+    _reset_fake_server_state()
+    _FakeGradioHandler.call_response = {"unexpected": "payload"}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        adapter = RemoteGradioAdapter(studio_settings)
+
+        with pytest.raises(SynthesisError, match="Unexpected Gradio call response"):
+            adapter.synthesize(
+                ref_audio=studio_root / "data" / "refs" / "hero_a.wav",
+                text="bad call response",
+                output_path=studio_root / "data" / "outputs" / "bad_call.wav",
+                options={},
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_gradio_adapter_reports_invalid_sse_json(
+    studio_settings: AppSettings,
+    studio_root: Path,
+) -> None:
+    _reset_fake_server_state()
+    _FakeGradioHandler.sse_body = b"event: complete\ndata: {\n\n"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        adapter = RemoteGradioAdapter(studio_settings)
+
+        with pytest.raises(SynthesisError, match="invalid JSON payload"):
+            adapter.synthesize(
+                ref_audio=studio_root / "data" / "refs" / "hero_a.wav",
+                text="bad sse json",
+                output_path=studio_root / "data" / "outputs" / "bad_sse.wav",
+                options={},
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_gradio_adapter_uses_total_stream_deadline(
+    monkeypatch,
+    studio_settings: AppSettings,
+) -> None:
+    _reset_fake_server_state()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        ticks = iter([100.0, 100.0, 102.0])
+        monkeypatch.setattr(
+            indextts_adapter_module.time,
+            "monotonic",
+            lambda: next(ticks, 102.0),
+        )
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        studio_settings.model.gradio_stream_timeout_seconds = 1
+        adapter = RemoteGradioAdapter(studio_settings)
+
+        with pytest.raises(SynthesisError, match="Timed out"):
+            adapter._read_sse_terminal_event(
+                f"{adapter.base_url}/gradio_api/call/gen_single/event-1"
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remote_gradio_adapter_removes_partial_download_on_timeout(
+    monkeypatch,
+    studio_settings: AppSettings,
+    studio_root: Path,
+) -> None:
+    class _PartialResponse:
+        fp = type("_Fp", (), {"raw": type("_Raw", (), {"_sock": None})()})()
+
+        def __init__(self) -> None:
+            self._reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, _: int) -> bytes:
+            self._reads += 1
+            return b"partial audio" if self._reads == 1 else b""
+
+    ticks = iter([100.0, 100.0, 100.0, 102.0])
+    monkeypatch.setattr(
+        indextts_adapter_module.time,
+        "monotonic",
+        lambda: next(ticks, 102.0),
+    )
+    monkeypatch.setattr(
+        indextts_adapter_module.urllib_request,
+        "urlopen",
+        lambda *_, **__: _PartialResponse(),
+    )
+    studio_settings.model.gradio_stream_timeout_seconds = 1
+    adapter = RemoteGradioAdapter(studio_settings)
+    destination = studio_root / "data" / "outputs" / "partial.wav"
+
+    with pytest.raises(SynthesisError, match="Timed out"):
+        adapter._download_to({"url": "http://example.test/output.wav"}, destination)
+
+    assert not destination.exists()
+    assert not list(destination.parent.glob(".partial.wav.*.part"))

@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -81,10 +82,16 @@ class StorageService:
     def write_json(self, path: Path, payload: Any) -> None:
         self.ensure_parent(path)
         serializable = self._make_jsonable(payload)
-        path.write_text(
-            json.dumps(serializable, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(
+                json.dumps(serializable, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temp_path.replace(path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
     def read_json(self, path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))

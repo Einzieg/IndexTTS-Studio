@@ -40,6 +40,10 @@ jobs:
         working-directory: web
         run: npm ci
 
+      - name: Typecheck frontend
+        working-directory: web
+        run: npm run typecheck
+
       - name: Build frontend
         working-directory: web
         run: npm run build
@@ -47,8 +51,11 @@ jobs:
       - name: Prepare .env
         run: cp .env.example .env
 
-      - name: Validate docker compose config
+      - name: Validate default docker compose config
         run: docker compose config > /tmp/docker-compose.rendered.yml
+
+      - name: Validate bundled docker compose config
+        run: docker compose --profile bundled config > /tmp/docker-compose.bundled.yml
 
   publish-studio-image:
     name: Publish Studio Image
@@ -132,7 +139,7 @@ jobs:
           build-args: |
             INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
             INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
-            INDEXTTS_UPSTREAM_REF=main
+            INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 

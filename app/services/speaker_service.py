@@ -4,6 +4,9 @@ import json
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from pydantic import ValidationError as PydanticValidationError
 
 from app.core.config import AppSettings
 from app.core.exceptions import MissingFileError, SpeakerNotFoundError, ValidationError
@@ -41,7 +44,7 @@ class SpeakerService:
         raw_data = self._read_raw_configs(project_id=project_id)
         speakers: dict[str, SpeakerProfile] = {}
         for speaker_name, config in raw_data.items():
-            schema = SpeakerConfigSchema.model_validate(config)
+            schema = self._validate_schema(speaker_name, config)
             ref_audio = self.storage.resolve_path(schema.ref_audio)
             if not ref_audio.exists():
                 raise MissingFileError(
@@ -148,7 +151,7 @@ class SpeakerService:
         if not updated.get("ref_audio"):
             raise ValidationError("Reference audio is required when creating a speaker.")
 
-        schema = SpeakerConfigSchema.model_validate(updated)
+        schema = self._validate_schema(speaker_name, updated)
         raw_configs[speaker_name] = schema.model_dump(exclude_none=True)
         self._write_raw_configs(raw_configs, project_id=project_id)
         self._clear_cache(project_id)
@@ -203,46 +206,115 @@ class SpeakerService:
                 f"Speaker `{conflicts[0]}` already exists in target project."
             )
 
-        copied_profiles: list[dict[str, Any]] = []
+        target_paths = self.project_service.project_paths(target_project.id)
+        plans: list[dict[str, Any]] = []
+        managed_dirs: set[str] = set()
         for speaker_name in selected_names:
-            if speaker_name in target_configs:
-                self._remove_managed_reference_dir(speaker_name, project_id=target_project.id)
+            source_schema = self._validate_schema(speaker_name, source_configs[speaker_name])
+            safe_speaker = self.storage.sanitize_fragment(speaker_name, default="speaker")
+            if safe_speaker in managed_dirs:
+                raise ValidationError(
+                    f"Multiple speaker names resolve to the same managed directory: `{safe_speaker}`."
+                )
+            managed_dirs.add(safe_speaker)
 
-            source_schema = SpeakerConfigSchema.model_validate(source_configs[speaker_name])
+            ref_source_path = self._resolve_referenced_audio(source_schema.ref_audio)
+            ref_safe_name = self.storage.sanitize_filename(
+                ref_source_path.name,
+                default_stem=f"{safe_speaker}_ref",
+                default_suffix=ref_source_path.suffix or ".wav",
+            )
+            ref_final_path = target_paths.refs_dir / safe_speaker / ref_safe_name
+
             copied_config = source_schema.model_dump(exclude_none=True)
-            copied_config["ref_audio"] = self._copy_referenced_audio(
-                source_schema.ref_audio,
-                speaker_name=speaker_name,
-                target_project_id=target_project.id,
-            )
+            copied_config["ref_audio"] = self.storage.to_project_relative(ref_final_path)
+
+            audio_copies = [
+                {
+                    "source_path": ref_source_path,
+                    "safe_name": ref_safe_name,
+                    "final_path": ref_final_path,
+                }
+            ]
             if source_schema.emo_audio:
-                copied_config["emo_audio"] = self._copy_referenced_audio(
-                    source_schema.emo_audio,
-                    speaker_name=speaker_name,
-                    target_project_id=target_project.id,
+                emo_source_path = self._resolve_referenced_audio(source_schema.emo_audio)
+                emo_safe_name = self.storage.sanitize_filename(
+                    emo_source_path.name,
+                    default_stem=f"{safe_speaker}_emo",
+                    default_suffix=emo_source_path.suffix or ".wav",
+                )
+                emo_final_path = target_paths.refs_dir / safe_speaker / emo_safe_name
+                copied_config["emo_audio"] = self.storage.to_project_relative(emo_final_path)
+                audio_copies.append(
+                    {
+                        "source_path": emo_source_path,
+                        "safe_name": emo_safe_name,
+                        "final_path": emo_final_path,
+                    }
                 )
 
-            target_configs[speaker_name] = copied_config
-            copied_profiles.append(
-                SpeakerProfile(
-                    name=speaker_name,
-                    ref_audio=self.storage.resolve_path(copied_config["ref_audio"]),
-                    options=GenerationOptions(
-                        **{
-                            key: value
-                            for key, value in copied_config.items()
-                            if key not in {"ref_audio", "emo_audio"}
-                        },
-                        emo_audio=self.storage.resolve_path(copied_config["emo_audio"])
-                        if copied_config.get("emo_audio")
-                        else None,
-                    ),
-                )
+            plans.append(
+                {
+                    "speaker_name": speaker_name,
+                    "safe_speaker": safe_speaker,
+                    "managed_dir": target_paths.refs_dir / safe_speaker,
+                    "copied_config": copied_config,
+                    "audio_copies": audio_copies,
+                }
             )
 
-        self._write_raw_configs(target_configs, project_id=target_project.id)
+        target_config_path = target_paths.speakers_file
+        original_target_config = (
+            target_config_path.read_text(encoding="utf-8")
+            if target_config_path.exists()
+            else None
+        )
+        staging_root = target_paths.refs_dir / f".copy-staging-{uuid4().hex}"
+        backup_root = target_paths.refs_dir / f".copy-backup-{uuid4().hex}"
+        moved_dirs: list[tuple[Path, Path]] = []
+        installed_dirs: list[Path] = []
+        try:
+            for plan in plans:
+                for audio_copy in plan["audio_copies"]:
+                    staged_path = staging_root / plan["safe_speaker"] / audio_copy["safe_name"]
+                    self.storage.ensure_parent(staged_path)
+                    shutil.copy2(audio_copy["source_path"], staged_path)
+
+            for plan in plans:
+                managed_dir = plan["managed_dir"]
+                if managed_dir.exists():
+                    backup_dir = backup_root / plan["safe_speaker"]
+                    self.storage.ensure_parent(backup_dir)
+                    shutil.move(str(managed_dir), str(backup_dir))
+                    moved_dirs.append((managed_dir, backup_dir))
+
+                staged_dir = staging_root / plan["safe_speaker"]
+                shutil.move(str(staged_dir), str(managed_dir))
+                installed_dirs.append(managed_dir)
+                target_configs[plan["speaker_name"]] = plan["copied_config"]
+
+            self._write_raw_configs(target_configs, project_id=target_project.id)
+        except Exception:
+            for installed_dir in installed_dirs:
+                if installed_dir.exists():
+                    shutil.rmtree(installed_dir, ignore_errors=True)
+            for managed_dir, backup_dir in reversed(moved_dirs):
+                if backup_dir.exists():
+                    if managed_dir.exists():
+                        shutil.rmtree(managed_dir, ignore_errors=True)
+                    shutil.move(str(backup_dir), str(managed_dir))
+            self._restore_raw_config_file(target_config_path, original_target_config)
+            self._clear_cache(target_project.id)
+            raise
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+            shutil.rmtree(backup_root, ignore_errors=True)
+
         self._clear_cache(target_project.id)
-        return [self._serialize_profile(profile) for profile in copied_profiles]
+        return [
+            self.get_speaker_profile(plan["speaker_name"], project_id=target_project.id)
+            for plan in plans
+        ]
 
     def _serialize_profile(self, speaker: SpeakerProfile) -> dict[str, Any]:
         payload = {
@@ -284,27 +356,26 @@ class SpeakerService:
         target = self._project_paths(project_id).refs_dir / safe_speaker / safe_name
         return self.storage.write_bytes(target, payload)
 
-    def _copy_referenced_audio(
+    def _validate_schema(
+        self,
+        speaker_name: str,
+        config: dict[str, Any],
+    ) -> SpeakerConfigSchema:
+        try:
+            return SpeakerConfigSchema.model_validate(config)
+        except PydanticValidationError as exc:
+            raise ValidationError(
+                f"Invalid speaker config for `{speaker_name}`: {exc.errors(include_url=False)}"
+            ) from exc
+
+    def _resolve_referenced_audio(
         self,
         audio_path: str,
-        *,
-        speaker_name: str,
-        target_project_id: str,
-    ) -> str:
+    ) -> Path:
         source_path = self.storage.resolve_path(audio_path)
         if not source_path.exists() or not source_path.is_file():
             raise MissingFileError(f"Referenced audio was not found: {source_path}")
-
-        safe_speaker = self.storage.sanitize_fragment(speaker_name, default="speaker")
-        safe_name = self.storage.sanitize_filename(
-            source_path.name,
-            default_stem=f"{safe_speaker}_ref",
-            default_suffix=source_path.suffix or ".wav",
-        )
-        target_path = self._project_paths(target_project_id).refs_dir / safe_speaker / safe_name
-        self.storage.ensure_parent(target_path)
-        shutil.copy2(source_path, target_path)
-        return self.storage.to_project_relative(target_path)
+        return source_path
 
     def _read_raw_configs(self, *, project_id: str | None = None) -> dict[str, dict[str, Any]]:
         speakers_path = self._project_paths(project_id).speakers_file
@@ -328,6 +399,19 @@ class SpeakerService:
     ) -> None:
         ordered = dict(sorted(payload.items(), key=lambda item: item[0]))
         self.storage.write_json(self._project_paths(project_id).speakers_file, ordered)
+
+    def _restore_raw_config_file(self, path: Path, content: str | None) -> None:
+        if content is None:
+            path.unlink(missing_ok=True)
+            return
+        self.storage.ensure_parent(path)
+        temp_path = path.with_name(f".{path.name}.{uuid4().hex}.restore")
+        try:
+            temp_path.write_text(content, encoding="utf-8")
+            temp_path.replace(path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
     def _remove_managed_reference_dir(
         self,

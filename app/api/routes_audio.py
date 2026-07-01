@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_container
+from app.api.path_validation import resolve_api_script_path
 from app.api.responses import api_response
 from app.core.container import ServiceContainer
 from app.domain.schemas import MergeAudioRequest
@@ -25,8 +26,13 @@ def merge_script_audio(
     payload: MergeAudioRequest,
     container: ServiceContainer = Depends(get_container),
 ) -> dict:
+    script_path = resolve_api_script_path(
+        container,
+        payload.script_path,
+        project_id=payload.project_id,
+    )
     report = container.audio_service.merge_script_outputs(
-        script_path=payload.script_path,
+        script_path=script_path,
         output_name=payload.output_name,
         gap_ms=payload.gap_ms,
         use_timeline=payload.use_timeline,

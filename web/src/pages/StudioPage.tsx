@@ -13,7 +13,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
 
 import { AudioCard, EmptyState, FieldLabel, ToggleTile } from "../components";
@@ -80,6 +80,7 @@ type BatchSyncState = {
   queuedRowIds: string[];
   preSkipped: number;
   preFailed: number;
+  submittedRows: Record<string, { speaker: string; text: string }>;
 };
 
 type StudioTablePayload = {
@@ -89,7 +90,13 @@ type StudioTablePayload = {
   updatedAt: string;
 };
 
+type LocalRowsDraft = {
+  rows: StudioRow[];
+  updatedAt: string | null;
+};
+
 const LEGACY_DRAFT_PREFIX = "indextts-studio:episode-draft";
+const BATCH_SYNC_PREFIX = "indextts-studio:batch-sync";
 const MAX_DIALOGUE_LINE_CHARS = 120;
 const STRONG_BREAK_CHARS = new Set(["。", "！", "？", "!", "?", "；", ";", "…"]);
 const SOFT_BREAK_CHARS = new Set(["，", ",", "、", "：", ":"]);
@@ -383,6 +390,10 @@ function legacyDraftStorageKey(projectId: string, episodeId: string): string {
   return `${LEGACY_DRAFT_PREFIX}:${projectId}:${episodeId}`;
 }
 
+function batchSyncStorageKey(projectId: string, episodeId: string): string {
+  return `${BATCH_SYNC_PREFIX}:${projectId}:${episodeId}`;
+}
+
 function normalizeRows(rows: StudioRow[] | undefined, defaultSpeaker: string): StudioRow[] {
   const sourceRows = Array.isArray(rows) ? rows : [];
   if (sourceRows.length === 0) {
@@ -401,16 +412,57 @@ function normalizeRows(rows: StudioRow[] | undefined, defaultSpeaker: string): S
   }));
 }
 
-function loadLegacyRows(projectId: string, episodeId: string, defaultSpeaker: string): StudioRow[] {
+function readLegacyRows(
+  projectId: string,
+  episodeId: string,
+  defaultSpeaker: string,
+): LocalRowsDraft | null {
   try {
     const raw = window.localStorage.getItem(legacyDraftStorageKey(projectId, episodeId));
     if (!raw) {
-      return [createEmptyRow(defaultSpeaker, 1)];
+      return null;
     }
-    const decoded = JSON.parse(raw) as { rows?: StudioRow[] };
-    return normalizeRows(decoded.rows, defaultSpeaker);
+    const decoded = JSON.parse(raw) as { rows?: StudioRow[]; updatedAt?: unknown };
+    return {
+      rows: normalizeRows(decoded.rows, defaultSpeaker),
+      updatedAt: typeof decoded.updatedAt === "string" ? decoded.updatedAt : null,
+    };
   } catch {
-    return [createEmptyRow(defaultSpeaker, 1)];
+    return null;
+  }
+}
+
+function isLocalDraftNewer(localUpdatedAt: string | null, serverUpdatedAt: string): boolean {
+  if (!localUpdatedAt) {
+    return false;
+  }
+  const localTime = Date.parse(localUpdatedAt);
+  const serverTime = Date.parse(serverUpdatedAt);
+  if (!Number.isFinite(localTime)) {
+    return false;
+  }
+  return !Number.isFinite(serverTime) || localTime > serverTime;
+}
+
+function loadPersistedBatchSync(projectId: string, episodeId: string): BatchSyncState | null {
+  try {
+    const raw = window.localStorage.getItem(batchSyncStorageKey(projectId, episodeId));
+    if (!raw) {
+      return null;
+    }
+    const decoded = JSON.parse(raw) as Partial<BatchSyncState>;
+    if (!decoded.jobId || !Array.isArray(decoded.queuedRowIds)) {
+      return null;
+    }
+    return {
+      jobId: decoded.jobId,
+      queuedRowIds: decoded.queuedRowIds,
+      preSkipped: Number(decoded.preSkipped ?? 0),
+      preFailed: Number(decoded.preFailed ?? 0),
+      submittedRows: decoded.submittedRows ?? {},
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -443,9 +495,20 @@ export function StudioPage(props: {
   const [isRowsLoading, setIsRowsLoading] = useState(false);
   const [isRowsHydrated, setIsRowsHydrated] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const saveRequestId = useRef(0);
+  const hydratedTableKey = useRef("");
+  const rowsRef = useRef<StudioRow[]>([]);
+  const tableKey =
+    activeProjectId && props.activeEpisodeId ? `${activeProjectId}:${props.activeEpisodeId}` : "";
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   useEffect(() => {
     if (!activeProjectId || !props.activeEpisodeId) {
+      hydratedTableKey.current = "";
+      saveRequestId.current += 1;
       setRows([]);
       setActiveBatchSync(null);
       setIsRowsHydrated(false);
@@ -453,6 +516,9 @@ export function StudioPage(props: {
     }
 
     let cancelled = false;
+    const requestedTableKey = tableKey;
+    hydratedTableKey.current = "";
+    saveRequestId.current += 1;
     setIsRowsLoading(true);
     setIsRowsHydrated(false);
 
@@ -465,14 +531,19 @@ export function StudioPage(props: {
           return;
         }
 
+        const localDraft = readLegacyRows(activeProjectId, props.activeEpisodeId, firstSpeaker);
         let nextRows = normalizeRows(payload.rows, firstSpeaker);
-        if (payload.rows.length === 0) {
-          nextRows = loadLegacyRows(activeProjectId, props.activeEpisodeId, firstSpeaker);
+        if (
+          localDraft &&
+          (payload.rows.length === 0 || isLocalDraftNewer(localDraft.updatedAt, payload.updatedAt))
+        ) {
+          nextRows = localDraft.rows;
         }
 
         setRows(nextRows);
         setActiveConfigRowId(null);
-        setActiveBatchSync(null);
+        setActiveBatchSync(loadPersistedBatchSync(activeProjectId, props.activeEpisodeId));
+        hydratedTableKey.current = requestedTableKey;
         setIsRowsHydrated(true);
       } catch (error) {
         if (cancelled) {
@@ -481,6 +552,7 @@ export function StudioPage(props: {
         setRows([createEmptyRow(firstSpeaker, 1)]);
         setActiveConfigRowId(null);
         setActiveBatchSync(null);
+        hydratedTableKey.current = "";
         setIsRowsHydrated(false);
         props.setNotice({
           tone: "error",
@@ -498,18 +570,32 @@ export function StudioPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectId, firstSpeaker, props.activeEpisodeId, props.setNotice]);
+  }, [activeProjectId, firstSpeaker, props.activeEpisodeId, props.setNotice, tableKey]);
 
   useEffect(() => {
-    if (!activeProjectId || !props.activeEpisodeId || !isRowsHydrated) {
+    if (
+      !activeProjectId ||
+      !props.activeEpisodeId ||
+      !isRowsHydrated ||
+      hydratedTableKey.current !== tableKey
+    ) {
       return;
     }
 
     let cancelled = false;
+    const controller = new AbortController();
+    const requestId = ++saveRequestId.current;
+    const draftKey = legacyDraftStorageKey(activeProjectId, props.activeEpisodeId);
+    window.localStorage.setItem(
+      draftKey,
+      JSON.stringify({ rows, updatedAt: new Date().toISOString() }),
+    );
+
     const timer = window.setTimeout(() => {
       void requestJson<StudioTablePayload>("/scripts/table", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           project_id: activeProjectId,
           episode_id: props.activeEpisodeId,
@@ -517,10 +603,12 @@ export function StudioPage(props: {
         }),
       })
         .then(() => {
-          window.localStorage.removeItem(legacyDraftStorageKey(activeProjectId, props.activeEpisodeId));
+          if (requestId === saveRequestId.current) {
+            window.localStorage.removeItem(draftKey);
+          }
         })
         .catch((error) => {
-          if (!cancelled) {
+          if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
             props.setNotice({
               tone: "error",
               message: error instanceof Error ? error.message : "保存文本工作台失败。",
@@ -532,8 +620,26 @@ export function StudioPage(props: {
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      controller.abort();
     };
-  }, [activeProjectId, isRowsHydrated, props.activeEpisodeId, props.setNotice, rows]);
+  }, [activeProjectId, isRowsHydrated, props.activeEpisodeId, props.setNotice, rows, tableKey]);
+
+  useEffect(() => {
+    if (
+      !activeProjectId ||
+      !props.activeEpisodeId ||
+      !isRowsHydrated ||
+      hydratedTableKey.current !== tableKey
+    ) {
+      return;
+    }
+    const key = batchSyncStorageKey(activeProjectId, props.activeEpisodeId);
+    if (activeBatchSync) {
+      window.localStorage.setItem(key, JSON.stringify(activeBatchSync));
+      return;
+    }
+    window.localStorage.removeItem(key);
+  }, [activeBatchSync, activeProjectId, isRowsHydrated, props.activeEpisodeId, tableKey]);
 
   useEffect(() => {
     if (!firstSpeaker) {
@@ -594,7 +700,24 @@ export function StudioPage(props: {
 
   function updateRow(rowId: string, patch: Partial<StudioRow>) {
     setRows((current) =>
-      current.map((row) => (row.rowId === rowId ? { ...row, ...patch } : row)),
+      current.map((row) => {
+        if (row.rowId !== rowId) {
+          return row;
+        }
+        const nextRow = { ...row, ...patch };
+        const textChanged = patch.text !== undefined && patch.text !== row.text;
+        const speakerChanged = patch.speaker !== undefined && patch.speaker !== row.speaker;
+        if (!textChanged && !speakerChanged) {
+          return nextRow;
+        }
+        return {
+          ...nextRow,
+          renders: [],
+          selectedRenderId: null,
+          lastStatus: "idle",
+          lastError: null,
+        };
+      }),
     );
   }
 
@@ -882,7 +1005,11 @@ export function StudioPage(props: {
     return { queuedLines, skippedRowIds, failedRows };
   }
 
-  function syncRowsFromLines(lines: JobLinesPayload["items"], queuedRowIds: string[]) {
+  function syncRowsFromLines(
+    lines: JobLinesPayload["items"],
+    queuedRowIds: string[],
+    submittedRows: BatchSyncState["submittedRows"],
+  ) {
     const queuedSet = new Set(queuedRowIds);
     const linesById = new Map(lines.map((line) => [line.line_id, line]));
 
@@ -894,6 +1021,16 @@ export function StudioPage(props: {
 
         const line = linesById.get(row.rowId);
         if (!line) {
+          return row;
+        }
+        const submittedRow = submittedRows[row.rowId];
+        if (
+          submittedRow &&
+          (row.speaker !== submittedRow.speaker || row.text.trim() !== submittedRow.text)
+        ) {
+          return row;
+        }
+        if (row.speaker !== line.speaker || row.text.trim() !== line.text.trim()) {
           return row;
         }
 
@@ -950,6 +1087,7 @@ export function StudioPage(props: {
 
     let cancelled = false;
     let timer: number | null = null;
+    let failureCount = 0;
 
     const poll = async () => {
       try {
@@ -960,8 +1098,13 @@ export function StudioPage(props: {
         if (cancelled) {
           return;
         }
+        failureCount = 0;
 
-        syncRowsFromLines(linesPayload.items, activeBatchSync.queuedRowIds);
+        syncRowsFromLines(
+          linesPayload.items,
+          activeBatchSync.queuedRowIds,
+          activeBatchSync.submittedRows,
+        );
 
         if (["completed", "completed_with_errors", "failed"].includes(job.status)) {
           const totalSkipped = activeBatchSync.preSkipped + job.skipped;
@@ -981,6 +1124,18 @@ export function StudioPage(props: {
         }
       } catch (error) {
         if (!cancelled) {
+          failureCount += 1;
+          if (failureCount >= 3) {
+            props.setNotice({
+              tone: "error",
+              message:
+                error instanceof Error
+                  ? `同步任务进度失败，已停止本次同步：${error.message}`
+                  : "同步任务进度失败，已停止本次同步。",
+            });
+            setActiveBatchSync(null);
+            return;
+          }
           props.setNotice({
             tone: "error",
             message: error instanceof Error ? error.message : "同步任务进度失败。",
@@ -1035,7 +1190,8 @@ export function StudioPage(props: {
 
     const setGenerating =
       options.source === "config" ? setIsGeneratingFromConfig : setIsGeneratingSelection;
-    setGenerating(true);
+      setGenerating(true);
+    const generationTableKey = tableKey;
     setRows((current) =>
       current.map((row) =>
         targetIdSet.has(row.rowId)
@@ -1116,6 +1272,15 @@ export function StudioPage(props: {
           queuedRowIds: queuedLines.map((line) => line.id),
           preSkipped: skipped,
           preFailed: failed,
+          submittedRows: Object.fromEntries(
+            queuedLines.map((line) => [
+              line.id,
+              {
+                speaker: line.speaker,
+                text: line.text,
+              },
+            ]),
+          ),
         });
         props.setNotice({
           tone: "info",
@@ -1173,6 +1338,7 @@ export function StudioPage(props: {
           options.configOverrideRowId === row.rowId
             ? overrideFromConfigForm(configForm)
             : row.override;
+        const submittedRow = { speaker: row.speaker, text: cleanText };
 
         try {
           const result = await requestJson<SingleResult>("/tts/single", {
@@ -1188,6 +1354,15 @@ export function StudioPage(props: {
               force: true,
             }),
           });
+          const currentRow = rowsRef.current.find((item) => item.rowId === row.rowId);
+          if (
+            hydratedTableKey.current !== generationTableKey ||
+            !currentRow ||
+            currentRow.speaker !== submittedRow.speaker ||
+            currentRow.text.trim() !== submittedRow.text
+          ) {
+            continue;
+          }
 
           const render: RowRender = {
             renderId: makeId(),
@@ -1200,7 +1375,9 @@ export function StudioPage(props: {
 
           setRows((current) =>
             current.map((item) =>
-              item.rowId === row.rowId
+              item.rowId === row.rowId &&
+              item.speaker === submittedRow.speaker &&
+              item.text.trim() === submittedRow.text
                 ? {
                     ...item,
                     override,
@@ -1215,10 +1392,21 @@ export function StudioPage(props: {
           props.onLatestResult(result);
           done += 1;
         } catch (error) {
+          const currentRow = rowsRef.current.find((item) => item.rowId === row.rowId);
+          if (
+            hydratedTableKey.current !== generationTableKey ||
+            !currentRow ||
+            currentRow.speaker !== submittedRow.speaker ||
+            currentRow.text.trim() !== submittedRow.text
+          ) {
+            continue;
+          }
           failed += 1;
           setRows((current) =>
             current.map((item) =>
-              item.rowId === row.rowId
+              item.rowId === row.rowId &&
+              item.speaker === submittedRow.speaker &&
+              item.text.trim() === submittedRow.text
                 ? {
                     ...item,
                     lastStatus: "failed",

@@ -47,11 +47,12 @@ INDEXTTS_STUDIO_BACKEND=remote_gradio
 INDEXTTS_STUDIO_GRADIO_BASE_URL=http://127.0.0.1:7861
 ```
 
-3. 如果 `web/dist` 不存在，或者你修改过前端代码，先构建 Web UI：
+3. 如果 `web/dist` 不存在，或者你修改过前端代码，先构建 Web UI。前端需要 `Node.js >= 20.19`：
 
 ```bash
 cd web
 npm install
+npm run typecheck
 npm run build
 ```
 
@@ -87,16 +88,27 @@ uv run indextts-studio batch --script data/scripts/episode1.csv
 - [`docker/index-tts/Dockerfile`](./docker/index-tts/Dockerfile)
 - [`docker/index-tts/entrypoint.sh`](./docker/index-tts/entrypoint.sh)
 
-默认的 Compose 流程会直接把 `studio` 和 `index-tts` 一起准备好，只需要拉取这个仓库，然后执行：
+默认的 Compose 流程只启动 `studio`，适合你已经在算力机或其他服务中运行了 IndexTTS Gradio 的场景：
 
 ```bash
-docker compose up --build
+docker compose up --build studio
 ```
 
-流程会自构建容器：
+这个默认流程中：
 
 - `studio` 容器由当前仓库构建，负责 FastAPI 和 Web UI
-- `index-tts` 容器也由当前仓库内置的 Dockerfile 构建
+- `index-tts` 不会默认启动，避免在当前机器误拉模型或占用 GPU
+- `.env` 是可选文件；没有 `.env` 时会使用内置默认值，正式部署仍建议从 `.env.example` 复制一份
+
+如果你确实要使用仓库内置的 `index-tts` 容器，再显式启用 `bundled` profile：
+
+```bash
+docker compose --profile bundled up --build
+```
+
+内置模型容器流程会自构建：
+
+- `index-tts` 容器由当前仓库内置的 Dockerfile 构建
 - 构建 `index-tts` 镜像时，会自动从官方仓库拉取上游源码
 - 构建时会主动跳过上游仓库里的 LFS 示例音频，因此官方仓库的 LFS 配额超限也不会阻塞容器构建
 - 首次启动 `index-tts` 容器时，如果发现模型权重不存在，会自动下载到持久化卷
@@ -105,16 +117,16 @@ docker compose up --build
 - 首次拉模型期间，`index-tts` 会先显示为“启动中”；只要模型引导进程还在运行，就不会再被误判为启动失败
 - 模型引导日志会定期打印当前已落盘体积、文件数和仍缺的关键文件，便于判断是在正常下载还是卡住
 
-当前附带的 `docker-compose.yml` 已经为 `index-tts` 服务声明 `gpus: all`，默认会把可用 GPU 透传给上游模型容器。Docker 和本地运行统一共用根目录 `.env`；本地保留 `127.0.0.1` 这类地址，容器相关差异通过 `INDEXTTS_STUDIO_DOCKER_*` 变量覆盖。你可以在 [`.env`](./.env) 或 [`.env.example`](./.env.example) 里调整这些变量：
+当前附带的 `docker-compose.yml` 已经为 `index-tts` 服务声明 GPU reservation，仅在启用 `bundled` profile 时生效。Docker 和本地运行统一共用根目录 `.env`；本地保留 `127.0.0.1` 这类地址，容器相关差异通过 `INDEXTTS_STUDIO_DOCKER_*` 变量覆盖。你可以在 [`.env`](./.env) 或 [`.env.example`](./.env.example) 里调整这些变量：
 
 ```text
 INDEXTTS_STUDIO_DOCKER_HOST=0.0.0.0
 INDEXTTS_STUDIO_DOCKER_PORT=8000
 INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP=false
-INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://index-tts:7861
+INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://host.docker.internal:7861
 INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
-INDEXTTS_UPSTREAM_REF=main
+INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
 INDEXTTS_MODEL_SOURCE=auto
 INDEXTTS_MODEL_REPO=IndexTeam/IndexTTS-2
 INDEXTTS_MODELSCOPE_MODEL_ID=IndexTeam/IndexTTS-2
@@ -127,21 +139,23 @@ INDEXTTS_NVIDIA_DRIVER_CAPABILITIES=compute,utility
 说明：
 
 - `INDEXTTS_MODEL_SOURCE=auto` 会优先尝试 Hugging Face，失败后再回退到 ModelScope
+- `INDEXTTS_UPSTREAM_REF` 默认固定到已验证提交；如需跟随上游分支，可手动改成分支名或标签，但构建将不再完全可复现
+- `studio` 容器默认通过 `host.docker.internal:7861` 访问宿主机或外部 Gradio；如果使用内置 `bundled` 模型容器，把 `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL` 改为 `http://index-tts:7861`
 - 如果你有 Hugging Face 令牌，可以直接写到根目录 `.env` 的 `HF_TOKEN=`，这样下载更稳、限速更少
 - `HF_ENDPOINT` 也统一从根目录 `.env` 配置，只有在你使用镜像站时才需要填写；留空即可
 - `docker compose` 会读取同一份 `.env`，并只在容器里覆盖少量网络相关变量，所以不需要再维护第二份 `.env.docker`
-- 如果你想只启动 `studio`，可以执行 `docker compose up studio`
+- 默认只启动 `studio`；如需内置模型容器，使用 `docker compose --profile bundled up --build`
 - 如果你当前环境拉取 Docker Hub 的 CUDA 基础镜像不稳定，可以把 `INDEXTTS_CUDA_BASE_IMAGE` 改成你自己的镜像站地址
 - 如果你想让 `studio` 容器直接跑 `official` 后端，则需要另外制作 CUDA 版镜像，当前这个 slim Python 镜像不适合直接跑模型
 - 宿主机侧仍然需要先具备 GPU 容器运行条件，例如 Linux 上的 NVIDIA Container Toolkit，或者 Docker Desktop 对 Linux 容器的 GPU 支持
 
-当前容器化默认配置走 `remote_gradio`，并把上游服务地址指向：
+当前容器化默认配置走 `remote_gradio`，并把上游服务地址指向宿主机网关：
 
 ```text
-http://index-tts:7861
+http://host.docker.internal:7861
 ```
 
-也就是说，`studio` 会直接通过同一个 `indextts-studio-net` 网络中的服务名访问内置的 `index-tts` 容器。
+如果启用 `bundled` profile，则应把 `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL` 改成 `http://index-tts:7861`，让 `studio` 通过同一个 `indextts-studio-net` 网络中的服务名访问内置的 `index-tts` 容器。
 
 如果你的 `index-tts` 是单独启动的容器，也可以手动让它加入这个网络，例如：
 
@@ -208,7 +222,7 @@ INDEXTTS_STUDIO_AUTH_SAME_SITE=lax
 
 - 当 `INDEXTTS_STUDIO_AUTH_ENABLED=true` 时，未登录用户访问 `/ui` 会先看到登录页
 - 登录页账号密码来自服务端根目录 `.env`
-- `INDEXTTS_STUDIO_AUTH_SESSION_SECRET` 留空时，系统会基于项目路径和账号信息生成一个会话签名密钥；正式部署建议显式填写
+- `INDEXTTS_STUDIO_AUTH_SESSION_SECRET` 留空时，系统会在每次服务进程启动时生成随机会话签名密钥；正式部署建议显式填写，避免重启后登录态全部失效
 - 如果你通过 HTTPS 暴露服务，建议同时设置 `INDEXTTS_STUDIO_AUTH_SECURE_COOKIE=true`
 - 当前公开放行的路径主要是 `/`、`/ui`、`/health` 和 `/auth/*`
 
@@ -320,7 +334,7 @@ INDEXTTS_STUDIO_AUTH_ENABLED=true
 仓库现在内置了两条 GitHub Actions 工作流：
 
 - [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)
-  用于日常提交校验，会执行后端测试、前端构建和 `docker compose config`
+  用于日常提交校验，会执行后端测试、前端类型检查、前端构建和两种 `docker compose config`
 - [`.github/workflows/release.yml`](./.github/workflows/release.yml)
   当推送版本标签 `v*` 时，会自动执行校验、创建 GitHub Release，并发布 GHCR 镜像
 
@@ -339,8 +353,9 @@ git push origin v0.2.0
 工作流会自动完成：
 
 - `uv run pytest -q`
+- `web` 前端类型检查
 - `web` 前端构建
-- `docker compose config`
+- 默认和 `bundled` profile 的 `docker compose config`
 - `studio` 镜像发布到 GHCR
 - `index-tts` 镜像发布到 GHCR
 - GitHub Release 创建

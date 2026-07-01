@@ -205,11 +205,12 @@ class RemoteGradioAdapter:
             options=options,
         ):
             try:
-                event_id = self._request_json(
+                call_response = self._request_json(
                     "POST",
                     self._route(f"/call{self.api_name}"),
                     payload={"data": variant},
-                )["event_id"]
+                )
+                event_id = self._extract_event_id(call_response)
                 event_type, event_payload = self._read_sse_terminal_event(
                     self._route(f"/call{self.api_name}/{event_id}")
                 )
@@ -418,16 +419,27 @@ class RemoteGradioAdapter:
             raise SynthesisError(f"Unexpected Gradio upload response: {response!r}")
         return str(response[0])
 
+    @staticmethod
+    def _extract_event_id(payload: Any) -> str:
+        if not isinstance(payload, dict) or not payload.get("event_id"):
+            raise SynthesisError(f"Unexpected Gradio call response: {payload!r}")
+        return str(payload["event_id"])
+
     def _read_sse_terminal_event(self, url: str) -> tuple[str, Any]:
         request_obj = urllib_request.Request(url, method="GET")
+        deadline = time.monotonic() + self.stream_timeout_seconds
         try:
             with urllib_request.urlopen(
                 request_obj,
-                timeout=self.stream_timeout_seconds,
+                timeout=self._remaining_timeout(deadline),
             ) as response:
                 event_type: str | None = None
                 event_data: str | None = None
-                for raw_line in response:
+                while True:
+                    self._set_response_timeout(response, self._remaining_timeout(deadline))
+                    raw_line = response.readline()
+                    if not raw_line:
+                        break
                     line = raw_line.decode("utf-8").strip()
                     if not line:
                         if event_type in {"complete", "error"}:
@@ -439,15 +451,24 @@ class RemoteGradioAdapter:
                         event_type = line.partition(":")[2].strip()
                     elif line.startswith("data:"):
                         event_data = line.partition(":")[2].strip()
+                if time.monotonic() > deadline:
+                    raise TimeoutError
                 if event_type is None:
                     raise SynthesisError("Remote Gradio queue did not return an event type.")
-                payload = json.loads(event_data) if event_data and event_data != "null" else None
+                try:
+                    payload = json.loads(event_data) if event_data and event_data != "null" else None
+                except json.JSONDecodeError as exc:
+                    raise SynthesisError(
+                        f"Remote Gradio queue returned invalid JSON payload: {event_data!r}"
+                    ) from exc
                 return event_type, payload
         except TimeoutError as exc:
             raise SynthesisError(
-                "Timed out while waiting for the remote Gradio queue stream. "
+                "Timed out while waiting for the remote Gradio queue stream to complete. "
                 f"Configured timeout: {self.stream_timeout_seconds} seconds."
             ) from exc
+        except UnicodeDecodeError as exc:
+            raise SynthesisError(f"Failed to decode Gradio queue stream: {exc}") from exc
         except urllib_error.URLError as exc:
             raise SynthesisError(f"Failed to read Gradio queue stream: {exc}") from exc
         except OSError as exc:
@@ -473,22 +494,53 @@ class RemoteGradioAdapter:
     def _download_to(self, remote_output: Mapping[str, Any], destination: Path) -> None:
         url = str(remote_output["url"])
         request_obj = urllib_request.Request(url, method="GET")
+        deadline = time.monotonic() + self.stream_timeout_seconds
+        temp_path: Path | None = None
         try:
             with urllib_request.urlopen(
                 request_obj,
-                timeout=self.stream_timeout_seconds,
+                timeout=self._remaining_timeout(deadline),
             ) as response:
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(response.read())
+                temp_path = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
+                with temp_path.open("wb") as output_file:
+                    while True:
+                        self._set_response_timeout(response, self._remaining_timeout(deadline))
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output_file.write(chunk)
+                temp_path.replace(destination)
         except TimeoutError as exc:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
             raise SynthesisError(
                 "Timed out while downloading remote audio output. "
                 f"Configured timeout: {self.stream_timeout_seconds} seconds."
             ) from exc
         except urllib_error.URLError as exc:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
             raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
         except OSError as exc:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
             raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
+
+    @staticmethod
+    def _remaining_timeout(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        return max(remaining, 0.001)
+
+    @staticmethod
+    def _set_response_timeout(response: Any, timeout: float) -> None:
+        fp = getattr(response, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
 
     def _request_json(
         self,
@@ -530,7 +582,10 @@ class RemoteGradioAdapter:
             raise SynthesisError(f"Remote Gradio request failed: {exc}") from exc
         if not content:
             return None
-        return json.loads(content)
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise SynthesisError(f"Remote Gradio returned invalid JSON: {content[:200]!r}") from exc
 
     def _format_terminal_error(self, event_type: str, payload: Any) -> str:
         if isinstance(payload, dict):

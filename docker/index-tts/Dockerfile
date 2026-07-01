@@ -2,7 +2,7 @@ ARG INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 FROM ${INDEXTTS_CUDA_BASE_IMAGE}
 
 ARG INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
-ARG INDEXTTS_UPSTREAM_REF=main
+ARG INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -33,7 +33,11 @@ RUN git lfs install --skip-smudge --system
 
 WORKDIR /opt
 
-RUN GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch ${INDEXTTS_UPSTREAM_REF} ${INDEXTTS_UPSTREAM_REPO} index-tts
+RUN GIT_LFS_SKIP_SMUDGE=1 git init index-tts \
+    && cd index-tts \
+    && git remote add origin ${INDEXTTS_UPSTREAM_REPO} \
+    && git fetch --depth 1 origin ${INDEXTTS_UPSTREAM_REF} \
+    && git checkout --detach FETCH_HEAD
 
 WORKDIR /opt/index-tts
 

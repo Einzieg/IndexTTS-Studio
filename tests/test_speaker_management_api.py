@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.container import ServiceContainer
+from app.core.exceptions import MissingFileError
 from app.main import create_app
 
 
@@ -109,3 +111,119 @@ def test_speaker_management_api_copies_profile_between_projects(
         assert target_profiles_response.status_code == 200
         target_profiles = target_profiles_response.json()["data"]["items"]
         assert [item["name"] for item in target_profiles] == ["可复用角色"]
+
+
+def test_speaker_management_api_returns_422_for_invalid_config(
+    container: ServiceContainer,
+) -> None:
+    container.storage.write_json(
+        container.settings.paths.speakers_file,
+        {
+            "坏角色": {
+                "ref_audio": "data/refs/hero_a.wav",
+                "emo_audio": "data/refs/hero_a_emo.wav",
+                "emo_vector": [1.0, 0.0, 0.0],
+            }
+        },
+    )
+
+    with TestClient(create_app(container)) as client:
+        response = client.get("/speakers/profiles")
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "Invalid speaker config" in response.json()["message"]
+
+
+def test_copy_speakers_overwrite_failure_preserves_target_profile(
+    container: ServiceContainer,
+) -> None:
+    ref_audio_path = container.settings.paths.refs_dir / "hero_a.wav"
+    source_project = container.project_service.upsert_project(name="Rollback Source")
+    target_project = container.project_service.upsert_project(name="Rollback Target")
+    target_profile = container.speaker_service.upsert_speaker(
+        project_id=target_project.id,
+        name="同名角色",
+        fields={"temperature": 0.5},
+        ref_audio_bytes=ref_audio_path.read_bytes(),
+        ref_audio_filename="target.wav",
+    )
+    target_ref_audio = container.storage.resolve_path(target_profile["ref_audio"])
+
+    source_paths = container.project_service.project_paths(source_project.id)
+    container.storage.write_json(
+        source_paths.speakers_file,
+        {
+            "同名角色": {
+                "ref_audio": f"data/projects/{source_project.id}/refs/missing.wav",
+                "temperature": 0.9,
+            }
+        },
+    )
+
+    with pytest.raises(MissingFileError):
+        container.speaker_service.copy_speakers(
+            source_project_id=source_project.id,
+            target_project_id=target_project.id,
+            speaker_names=["同名角色"],
+            overwrite=True,
+        )
+
+    preserved_profile = container.speaker_service.get_speaker_profile(
+        "同名角色",
+        project_id=target_project.id,
+    )
+    assert preserved_profile["options"]["temperature"] == 0.5
+    assert preserved_profile["ref_audio"] == target_profile["ref_audio"]
+    assert target_ref_audio.exists()
+
+
+def test_copy_speakers_overwrite_write_failure_restores_config_and_refs(
+    monkeypatch,
+    container: ServiceContainer,
+) -> None:
+    ref_audio_path = container.settings.paths.refs_dir / "hero_a.wav"
+    source_project = container.project_service.upsert_project(name="Write Rollback Source")
+    target_project = container.project_service.upsert_project(name="Write Rollback Target")
+    container.speaker_service.upsert_speaker(
+        project_id=source_project.id,
+        name="同名角色",
+        fields={"temperature": 0.9},
+        ref_audio_bytes=ref_audio_path.read_bytes(),
+        ref_audio_filename="source.wav",
+    )
+    target_profile = container.speaker_service.upsert_speaker(
+        project_id=target_project.id,
+        name="同名角色",
+        fields={"temperature": 0.5},
+        ref_audio_bytes=ref_audio_path.read_bytes(),
+        ref_audio_filename="target.wav",
+    )
+    target_paths = container.project_service.project_paths(target_project.id)
+    target_ref_audio = container.storage.resolve_path(target_profile["ref_audio"])
+    copied_ref_audio = target_paths.refs_dir / "同名角色" / "source.wav"
+    original_write_raw_configs = container.speaker_service._write_raw_configs
+
+    def fail_target_write(payload, *, project_id=None):
+        if project_id == target_project.id:
+            raise RuntimeError("simulated config write failure")
+        original_write_raw_configs(payload, project_id=project_id)
+
+    monkeypatch.setattr(container.speaker_service, "_write_raw_configs", fail_target_write)
+
+    with pytest.raises(RuntimeError, match="simulated config write failure"):
+        container.speaker_service.copy_speakers(
+            source_project_id=source_project.id,
+            target_project_id=target_project.id,
+            speaker_names=["同名角色"],
+            overwrite=True,
+        )
+
+    preserved_profile = container.speaker_service.get_speaker_profile(
+        "同名角色",
+        project_id=target_project.id,
+    )
+    assert preserved_profile["options"]["temperature"] == 0.5
+    assert preserved_profile["ref_audio"] == target_profile["ref_audio"]
+    assert target_ref_audio.exists()
+    assert not copied_ref_audio.exists()

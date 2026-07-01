@@ -142,6 +142,7 @@ export default function App() {
   const [isJobLinesLoading, setIsJobLinesLoading] = useState(false);
   const overviewRequestId = useRef(0);
   const speakerRequestId = useRef(0);
+  const jobLinesRequestId = useRef(0);
 
   const activeProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -150,6 +151,10 @@ export default function App() {
   const activeEpisode = useMemo(
     () => activeProject?.episodes.find((episode) => episode.id === selectedEpisodeId) ?? null,
     [activeProject, selectedEpisodeId],
+  );
+  const selectedJob = useMemo(
+    () => jobs.find((job) => job.job_id === selectedJobId) ?? null,
+    [jobs, selectedJobId],
   );
   const authEnabled = authSession?.enabled ?? false;
   const isAuthenticated = authSession?.authenticated ?? false;
@@ -366,22 +371,32 @@ export default function App() {
     }
   });
 
-  const loadJobLines = useEffectEvent(async (jobId: string) => {
-    setIsJobLinesLoading(true);
+  const loadJobLines = useEffectEvent(async (jobId: string, showLoading = true) => {
+    const requestId = ++jobLinesRequestId.current;
+    if (showLoading) {
+      setIsJobLinesLoading(true);
+    }
     try {
       const payload = await requestJson<JobLinesPayload>(`/jobs/${jobId}/lines`);
+      if (requestId !== jobLinesRequestId.current || jobId !== selectedJobId) {
+        return;
+      }
       startTransition(() => setJobLines(payload.items));
     } catch (error) {
       if (error instanceof UnauthorizedError) {
         return;
       }
-      setJobLines([]);
-      setNotice({
-        tone: "error",
-        message: error instanceof Error ? error.message : "加载任务明细失败。",
-      });
+      if (requestId === jobLinesRequestId.current) {
+        setJobLines([]);
+        setNotice({
+          tone: "error",
+          message: error instanceof Error ? error.message : "加载任务明细失败。",
+        });
+      }
     } finally {
-      setIsJobLinesLoading(false);
+      if (requestId === jobLinesRequestId.current) {
+        setIsJobLinesLoading(false);
+      }
     }
   });
 
@@ -405,11 +420,34 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedJobId) {
+      jobLinesRequestId.current += 1;
       setJobLines([]);
       return;
     }
-    void loadJobLines(selectedJobId);
-  }, [selectedJobId]);
+    void loadJobLines(selectedJobId, true);
+    if (!selectedJob || !["queued", "running"].includes(selectedJob.status)) {
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      await loadJobLines(selectedJobId, false);
+      if (!cancelled) {
+        timer = window.setTimeout(() => {
+          void poll();
+        }, 1200);
+      }
+    };
+    timer = window.setTimeout(() => {
+      void poll();
+    }, 1200);
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [loadJobLines, selectedJob?.status, selectedJobId]);
 
   function navigateTo(nextPage: StudioPageId) {
     window.location.hash = `#/${nextPage}`;

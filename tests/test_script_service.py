@@ -103,3 +103,27 @@ def test_script_service_loads_line_overrides(container: ServiceContainer) -> Non
     assert json_lines[0].override["top_k"] == 12
     assert json_lines[0].override["emo_text"] == "whispering"
     assert json_lines[0].override["use_emo_text"] is True
+
+
+def test_save_inline_script_uses_collision_resistant_filename(
+    container: ServiceContainer,
+    tmp_path,
+) -> None:
+    lines = container.script_service.build_lines(
+        [{"id": "1", "speaker": "主角A", "text": "same second inline script"}]
+    )
+
+    first_path = container.script_service.save_inline_script(
+        title="重复标题",
+        lines=lines,
+        base_dir=tmp_path,
+    )
+    second_path = container.script_service.save_inline_script(
+        title="重复标题",
+        lines=lines,
+        base_dir=tmp_path,
+    )
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()

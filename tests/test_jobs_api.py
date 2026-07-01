@@ -118,6 +118,27 @@ def test_job_lines_expose_script_override(container: ServiceContainer) -> None:
         assert line["override"]["top_k"] == 11
 
 
+def test_create_job_rejects_paths_outside_managed_scripts(
+    container: ServiceContainer,
+    studio_root: Path,
+) -> None:
+    outside_script = studio_root / "outside_job.csv"
+    outside_script.write_text(
+        "id,scene,speaker,text\n1,001,主角A,outside job\n",
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(container)) as client:
+        response = client.post(
+            "/jobs",
+            json={"script_path": str(outside_script), "force": True},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "managed scripts directory" in response.json()["message"]
+
+
 def test_persisted_queued_job_is_recovered_on_startup(
     studio_settings,
 ) -> None:

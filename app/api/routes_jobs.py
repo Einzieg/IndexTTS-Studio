@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_container
+from app.api.path_validation import resolve_api_script_path
 from app.api.responses import api_response
 from app.core.container import ServiceContainer
 from app.domain.schemas import CreateInlineJobRequest, CreateJobRequest
@@ -31,8 +32,13 @@ def create_job(
     payload: CreateJobRequest,
     container: ServiceContainer = Depends(get_container),
 ) -> dict:
+    script_path = resolve_api_script_path(
+        container,
+        payload.script_path,
+        project_id=payload.project_id,
+    )
     job = container.job_service.create_job(
-        script_path=payload.script_path,
+        script_path=script_path,
         project_id=payload.project_id,
         episode_id=payload.episode_id,
         skip_existing=payload.skip_existing,

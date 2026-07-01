@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import get_container
+from app.api.path_validation import resolve_api_script_path
 from app.api.responses import api_response
 from app.core.container import ServiceContainer
 from app.domain.schemas import StudioTableSaveRequest
@@ -53,7 +54,7 @@ def preview_script(
     script_path: str = Query(...),
     container: ServiceContainer = Depends(get_container),
 ) -> dict:
-    resolved_path = container.storage.resolve_path(script_path)
+    resolved_path = resolve_api_script_path(container, script_path)
     lines = container.script_service.load_script(resolved_path)
     return api_response(
         success=True,
