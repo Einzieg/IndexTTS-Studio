@@ -39,9 +39,9 @@ class StorageService:
     def to_project_relative(self, path: Path) -> str:
         resolved = path.resolve()
         try:
-            return str(resolved.relative_to(self.settings.paths.project_root))
+            return resolved.relative_to(self.settings.paths.project_root).as_posix()
         except ValueError:
-            return str(resolved)
+            return resolved.as_posix()
 
     def sanitize_fragment(self, value: str | None, default: str = "item") -> str:
         text = (value or "").strip()

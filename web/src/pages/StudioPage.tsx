@@ -377,29 +377,14 @@ function selectedRenderForRow(row: StudioRow): RowRender | null {
   return row.renders[row.renders.length - 1] ?? null;
 }
 
-function resolveDownloadFilename(disposition: string | null, fallback: string): string {
-  if (!disposition) {
-    return fallback;
-  }
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    return decodeURIComponent(utf8Match[1]);
-  }
-  const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
-  return plainMatch?.[1] ?? fallback;
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const downloadUrl = window.URL.createObjectURL(blob);
+function triggerDownloadUrl(downloadUrl: string) {
   const link = document.createElement("a");
   link.href = downloadUrl;
-  link.download = filename;
   link.rel = "noopener";
   link.style.display = "none";
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 30_000);
 }
 
 function legacyDraftStorageKey(projectId: string, episodeId: string): string {
@@ -906,44 +891,13 @@ export function StudioPage(props: {
     }
 
     setIsExporting(true);
-    try {
-      const response = await fetch(
-        `/scripts/table/export?project_id=${encodeURIComponent(activeProjectId)}&episode_id=${encodeURIComponent(props.activeEpisodeId)}`,
-        { credentials: "same-origin" },
-      );
-      if (!response.ok) {
-        let message = "导出失败。";
-        try {
-          const payload = (await response.json()) as { message?: string };
-          if (payload.message) {
-            message = payload.message;
-          }
-        } catch {
-          // Ignore JSON parsing failures and fall back to the default message.
-        }
-        throw new Error(message);
-      }
-
-      const blob = await response.blob();
-      const downloadName = resolveDownloadFilename(
-        response.headers.get("Content-Disposition"),
-        `项目-${props.project.name}-分集-${props.activeEpisodeId}-导出.zip`,
-      );
-      downloadBlob(blob, downloadName);
-
-      const exportedCount = Number(response.headers.get("X-Exported-Count") ?? exportableRowCount);
-      props.setNotice({
-        tone: "success",
-        message: `已导出 ${exportedCount} 条配音，下载文件已开始。`,
-      });
-    } catch (error) {
-      props.setNotice({
-        tone: "error",
-        message: error instanceof Error ? error.message : "导出失败。",
-      });
-    } finally {
-      setIsExporting(false);
-    }
+    const downloadUrl = `/scripts/table/export?project_id=${encodeURIComponent(activeProjectId)}&episode_id=${encodeURIComponent(props.activeEpisodeId)}`;
+    triggerDownloadUrl(downloadUrl);
+    props.setNotice({
+      tone: "success",
+      message: `导出请求已开始，浏览器将下载 ${exportableRowCount} 条配音。`,
+    });
+    window.setTimeout(() => setIsExporting(false), 800);
   }
 
   function duplicateRow(row: StudioRow) {

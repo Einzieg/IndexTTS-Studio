@@ -133,8 +133,10 @@ class ModelSettings:
     gradio_base_url: str = "http://127.0.0.1:7861"
     gradio_api_prefix: str = "/gradio_api"
     gradio_api_name: str = "/gen_single"
-    gradio_request_timeout_seconds: int = 60
-    gradio_stream_timeout_seconds: int = 300
+    gradio_request_timeout_seconds: int = 300
+    gradio_stream_timeout_seconds: int = 1_800
+    gradio_retry_attempts: int = 3
+    gradio_retry_backoff_seconds: int = 2
 
 
 @dataclass(slots=True)
@@ -259,13 +261,33 @@ def load_settings() -> AppSettings:
             "INDEXTTS_STUDIO_GRADIO_API_NAME",
             "/gen_single",
         ),
-        gradio_request_timeout_seconds=_parse_int(
-            os.getenv("INDEXTTS_STUDIO_GRADIO_REQUEST_TIMEOUT_SECONDS"),
-            60,
+        gradio_request_timeout_seconds=max(
+            _parse_int(
+                os.getenv("INDEXTTS_STUDIO_GRADIO_REQUEST_TIMEOUT_SECONDS"),
+                300,
+            ),
+            1,
         ),
-        gradio_stream_timeout_seconds=_parse_int(
-            os.getenv("INDEXTTS_STUDIO_GRADIO_STREAM_TIMEOUT_SECONDS"),
-            300,
+        gradio_stream_timeout_seconds=max(
+            _parse_int(
+                os.getenv("INDEXTTS_STUDIO_GRADIO_STREAM_TIMEOUT_SECONDS"),
+                1_800,
+            ),
+            1,
+        ),
+        gradio_retry_attempts=max(
+            _parse_int(
+                os.getenv("INDEXTTS_STUDIO_GRADIO_RETRY_ATTEMPTS"),
+                3,
+            ),
+            1,
+        ),
+        gradio_retry_backoff_seconds=max(
+            _parse_int(
+                os.getenv("INDEXTTS_STUDIO_GRADIO_RETRY_BACKOFF_SECONDS"),
+                2,
+            ),
+            0,
         ),
     )
 

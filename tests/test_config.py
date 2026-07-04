@@ -36,6 +36,10 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
                 "INDEXTTS_STUDIO_DATA_DIR=runtime_data",
                 "INDEXTTS_STUDIO_BACKEND=mock",
                 "INDEXTTS_STUDIO_GRADIO_BASE_URL=http://127.0.0.1:9999",
+                "INDEXTTS_STUDIO_GRADIO_REQUEST_TIMEOUT_SECONDS=123",
+                "INDEXTTS_STUDIO_GRADIO_STREAM_TIMEOUT_SECONDS=456",
+                "INDEXTTS_STUDIO_GRADIO_RETRY_ATTEMPTS=4",
+                "INDEXTTS_STUDIO_GRADIO_RETRY_BACKOFF_SECONDS=5",
                 "INDEXTTS_STUDIO_PORT=8123",
                 "INDEXTTS_STUDIO_MAX_SCRIPT_LINE_TEXT_CHARS=42",
                 "INDEXTTS_STUDIO_AUTH_ENABLED=true",
@@ -57,6 +61,10 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
     assert settings.paths.jobs_dir == (tmp_path / "runtime_data" / "jobs")
     assert settings.model.backend == "mock"
     assert settings.model.gradio_base_url == "http://127.0.0.1:9999"
+    assert settings.model.gradio_request_timeout_seconds == 123
+    assert settings.model.gradio_stream_timeout_seconds == 456
+    assert settings.model.gradio_retry_attempts == 4
+    assert settings.model.gradio_retry_backoff_seconds == 5
     assert settings.api.port == 8123
     assert settings.max_script_line_text_chars == 42
     assert settings.auth.enabled is True

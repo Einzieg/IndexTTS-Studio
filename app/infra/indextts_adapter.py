@@ -173,6 +173,8 @@ class RemoteGradioAdapter:
         self.api_name = settings.model.gradio_api_name
         self.request_timeout_seconds = settings.model.gradio_request_timeout_seconds
         self.stream_timeout_seconds = settings.model.gradio_stream_timeout_seconds
+        self.retry_attempts = settings.model.gradio_retry_attempts
+        self.retry_backoff_seconds = settings.model.gradio_retry_backoff_seconds
         self._lock = threading.Lock()
         self._info_cache: dict[str, Any] | None = None
 
@@ -470,9 +472,9 @@ class RemoteGradioAdapter:
         except UnicodeDecodeError as exc:
             raise SynthesisError(f"Failed to decode Gradio queue stream: {exc}") from exc
         except urllib_error.URLError as exc:
-            raise SynthesisError(f"Failed to read Gradio queue stream: {exc}") from exc
+            raise SynthesisError(f"Failed to read Gradio queue stream from {url}: {exc}") from exc
         except OSError as exc:
-            raise SynthesisError(f"Failed to read Gradio queue stream: {exc}") from exc
+            raise SynthesisError(f"Failed to read Gradio queue stream from {url}: {exc}") from exc
 
     def _extract_remote_output(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, list) or not payload:
@@ -521,11 +523,15 @@ class RemoteGradioAdapter:
         except urllib_error.URLError as exc:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
-            raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
+            raise SynthesisError(
+                f"Failed to download remote audio output from {url}: {exc}"
+            ) from exc
         except OSError as exc:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
-            raise SynthesisError(f"Failed to download remote audio output: {exc}") from exc
+            raise SynthesisError(
+                f"Failed to download remote audio output from {url}: {exc}"
+            ) from exc
 
     @staticmethod
     def _remaining_timeout(deadline: float) -> float:
@@ -560,32 +566,62 @@ class RemoteGradioAdapter:
         if headers:
             request_headers.update(headers)
         request_obj = urllib_request.Request(url, data=body, method=method, headers=request_headers)
-        try:
-            with urllib_request.urlopen(
-                request_obj,
-                timeout=self.request_timeout_seconds,
-            ) as response:
-                content = response.read().decode("utf-8")
-        except urllib_error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "ignore")
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                with urllib_request.urlopen(
+                    request_obj,
+                    timeout=self.request_timeout_seconds,
+                ) as response:
+                    content = response.read().decode("utf-8")
+                break
+            except urllib_error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "ignore")
+                if exc.code in {502, 503, 504} and attempt < self.retry_attempts:
+                    last_error = exc
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise SynthesisError(
+                    f"Remote Gradio request failed for {url} with HTTP {exc.code}: "
+                        f"{detail or exc.reason}"
+                    ) from exc
+            except (TimeoutError, urllib_error.URLError) as exc:
+                if attempt < self.retry_attempts:
+                    last_error = exc
+                    self._sleep_before_retry(attempt)
+                    continue
+                if isinstance(exc, TimeoutError):
+                    raise SynthesisError(
+                        "Timed out while calling remote Gradio. "
+                        f"Configured timeout: {self.request_timeout_seconds} seconds."
+                    ) from exc
+                raise SynthesisError(
+                    f"Remote Gradio request failed for {url}: {exc}"
+                ) from exc
+            except OSError as exc:
+                if attempt < self.retry_attempts:
+                    last_error = exc
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise SynthesisError(
+                    f"Remote Gradio request failed for {url}: {exc}"
+                ) from exc
+        else:  # pragma: no cover - defensive loop guard
             raise SynthesisError(
-                f"Remote Gradio request failed with HTTP {exc.code}: {detail or exc.reason}"
-            ) from exc
-        except TimeoutError as exc:
-            raise SynthesisError(
-                "Timed out while calling remote Gradio. "
-                f"Configured timeout: {self.request_timeout_seconds} seconds."
-            ) from exc
-        except urllib_error.URLError as exc:
-            raise SynthesisError(f"Remote Gradio request failed: {exc}") from exc
-        except OSError as exc:
-            raise SynthesisError(f"Remote Gradio request failed: {exc}") from exc
+                f"Remote Gradio request failed for {url}: {last_error or 'unknown error'}"
+            )
         if not content:
             return None
         try:
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise SynthesisError(f"Remote Gradio returned invalid JSON: {content[:200]!r}") from exc
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self.retry_backoff_seconds <= 0:
+            return
+        time.sleep(self.retry_backoff_seconds * attempt)
 
     def _format_terminal_error(self, event_type: str, payload: Any) -> str:
         if isinstance(payload, dict):

@@ -97,6 +97,7 @@ docker compose up --build studio
 这个默认流程中：
 
 - `studio` 容器由当前仓库构建，负责 FastAPI 和 Web UI
+- 本地 `docker compose` 运行时，`studio` 还会额外挂载工作区里的 `app/` 和 `web/dist/`，所以直接执行 `docker compose up -d studio` 时会优先使用你当前的后端代码和前端构建产物，不会回退到镜像里较旧的静态资源
 - `index-tts` 不会默认启动，避免在当前机器误拉模型或占用 GPU
 - `.env` 是可选文件；没有 `.env` 时会使用内置默认值，正式部署仍建议从 `.env.example` 复制一份
 
@@ -124,6 +125,8 @@ INDEXTTS_STUDIO_DOCKER_HOST=0.0.0.0
 INDEXTTS_STUDIO_DOCKER_PORT=8000
 INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP=false
 INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://host.docker.internal:7861
+INDEXTTS_UPSTREAM_DOCKER_BIND_HOST=127.0.0.1
+INDEXTTS_UPSTREAM_DOCKER_PORT=7861
 INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
 INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
@@ -146,6 +149,7 @@ INDEXTTS_NVIDIA_DRIVER_CAPABILITIES=compute,utility
 - `docker compose` 会读取同一份 `.env`，并只在容器里覆盖少量网络相关变量，所以不需要再维护第二份 `.env.docker`
 - 默认只启动 `studio`；如需内置模型容器，使用 `docker compose --profile bundled up --build`
 - 如果你当前环境拉取 Docker Hub 的 CUDA 基础镜像不稳定，可以把 `INDEXTTS_CUDA_BASE_IMAGE` 改成你自己的镜像站地址
+- `INDEXTTS_UPSTREAM_DOCKER_BIND_HOST` 和 `INDEXTTS_UPSTREAM_DOCKER_PORT` 用来控制内置 `index-tts` 容器发布到宿主机的地址和端口；本地自用时保持 `127.0.0.1`，需要给远端 `studio` 访问时可以改成 `0.0.0.0` 或 VPN 网卡地址
 - 如果你想让 `studio` 容器直接跑 `official` 后端，则需要另外制作 CUDA 版镜像，当前这个 slim Python 镜像不适合直接跑模型
 - 宿主机侧仍然需要先具备 GPU 容器运行条件，例如 Linux 上的 NVIDIA Container Toolkit，或者 Docker Desktop 对 Linux 容器的 GPU 支持
 
@@ -179,6 +183,8 @@ docker run --gpus all --name index-tts --network indextts-studio-net ...
 - `INDEXTTS_STUDIO_DOCKER_PORT`
 - `INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP`
 - `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL`
+- `INDEXTTS_UPSTREAM_DOCKER_BIND_HOST`
+- `INDEXTTS_UPSTREAM_DOCKER_PORT`
 - `INDEXTTS_CUDA_BASE_IMAGE`
 - `HF_TOKEN`
 
@@ -317,11 +323,19 @@ INDEXTTS_STUDIO_GRADIO_BASE_URL=http://<你的本地机器可达地址>:7861
 INDEXTTS_STUDIO_AUTH_ENABLED=true
 ```
 
+本地算力机上内置 `index-tts` 容器的常见配置：
+
+```text
+INDEXTTS_UPSTREAM_DOCKER_BIND_HOST=0.0.0.0
+INDEXTTS_UPSTREAM_DOCKER_PORT=7861
+```
+
 更稳妥的做法：
 
 - 使用 `Tailscale`、`WireGuard` 或其他内网组网方式，让服务器安全访问你本地的 `7861`
 - 给 `studio` 再套一层反向代理，例如 `Nginx` 或 `Caddy`
 - 对外开放时启用 HTTPS，并把 `INDEXTTS_STUDIO_AUTH_SECURE_COOKIE=true`
+- 对 `7861` 配合防火墙或 VPN 网段做访问控制，不要无保护地直接暴露到公网
 
 需要注意：
 

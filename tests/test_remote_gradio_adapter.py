@@ -38,6 +38,8 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
     uploaded_paths: list[str] = []
     call_response: Any = {"event_id": "event-1"}
     sse_body: bytes | None = None
+    delayed_upload_attempts = 0
+    delay_upload_seconds = 0.0
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/config":
@@ -109,6 +111,14 @@ class _FakeGradioHandler(BaseHTTPRequestHandler):
 
         if self.path == "/gradio_api/upload":
             _FakeGradioHandler.upload_count += 1
+            if (
+                _FakeGradioHandler.delay_upload_seconds > 0
+                and _FakeGradioHandler.delayed_upload_attempts == 0
+            ):
+                _FakeGradioHandler.delayed_upload_attempts += 1
+                import time
+
+                time.sleep(_FakeGradioHandler.delay_upload_seconds)
             uploaded_path = f"/tmp/gradio/ref-{_FakeGradioHandler.upload_count}.wav"
             _FakeGradioHandler.uploaded_paths.append(uploaded_path)
             self._send_json([uploaded_path])
@@ -139,6 +149,8 @@ def _reset_fake_server_state() -> None:
     _FakeGradioHandler.uploaded_paths = []
     _FakeGradioHandler.call_response = {"event_id": "event-1"}
     _FakeGradioHandler.sse_body = None
+    _FakeGradioHandler.delayed_upload_attempts = 0
+    _FakeGradioHandler.delay_upload_seconds = 0.0
 
 
 def test_remote_gradio_adapter_downloads_output(
@@ -230,7 +242,6 @@ def test_remote_gradio_adapter_reuploads_reference_audio_for_each_request(
     finally:
         server.shutdown()
         server.server_close()
-
 
 def test_remote_gradio_adapter_rejects_invalid_json_response(
     studio_settings: AppSettings,
@@ -369,3 +380,37 @@ def test_remote_gradio_adapter_removes_partial_download_on_timeout(
 
     assert not destination.exists()
     assert not list(destination.parent.glob(".partial.wav.*.part"))
+
+
+def test_remote_gradio_adapter_retries_upload_timeout(
+    studio_settings: AppSettings,
+    studio_root: Path,
+) -> None:
+    _reset_fake_server_state()
+    _FakeGradioHandler.delay_upload_seconds = 1.2
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeGradioHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        studio_settings.model.backend = "remote_gradio"
+        studio_settings.model.gradio_base_url = f"http://127.0.0.1:{server.server_port}"
+        studio_settings.model.gradio_request_timeout_seconds = 1
+        studio_settings.model.gradio_retry_attempts = 2
+        studio_settings.model.gradio_retry_backoff_seconds = 0
+        adapter = RemoteGradioAdapter(studio_settings)
+        adapter.warmup()
+
+        ref_audio = studio_root / "data" / "refs" / "hero_a.wav"
+        result = adapter.synthesize(
+            ref_audio=ref_audio,
+            text="retry upload timeout",
+            output_path=studio_root / "data" / "outputs" / "remote_test_retry.wav",
+            options={},
+        )
+
+        assert result["duration_ms"] >= 0
+        assert _FakeGradioHandler.upload_count == 2
+        assert _FakeGradioHandler.delayed_upload_attempts == 1
+    finally:
+        server.shutdown()
+        server.server_close()

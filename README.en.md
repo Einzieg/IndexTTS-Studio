@@ -97,6 +97,7 @@ docker compose up --build studio
 What happens in this setup:
 
 - `studio` is built from this repository and serves the API + Web UI
+- for local `docker compose` runs, the `studio` service also bind-mounts `app/` and `web/dist/`, so `docker compose up -d studio` keeps using your current backend code and built frontend assets instead of falling back to an older image layer
 - `index-tts` is not started by default, so this host does not unexpectedly download models or reserve GPU
 - `.env` is optional; without it the app uses built-in defaults, though real deployments should still copy from `.env.example`
 
@@ -126,6 +127,8 @@ INDEXTTS_STUDIO_DOCKER_HOST=0.0.0.0
 INDEXTTS_STUDIO_DOCKER_PORT=8000
 INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP=false
 INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL=http://host.docker.internal:7861
+INDEXTTS_UPSTREAM_DOCKER_BIND_HOST=127.0.0.1
+INDEXTTS_UPSTREAM_DOCKER_PORT=7861
 INDEXTTS_CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 INDEXTTS_UPSTREAM_REPO=https://github.com/index-tts/index-tts.git
 INDEXTTS_UPSTREAM_REF=7264ce2a9a0924becb6b8da3f60725f7663de089
@@ -152,6 +155,7 @@ Notes:
 - `docker compose` now reads the same `.env`, with only a few container-network overrides layered on top, so there is no separate `.env.docker` to maintain
 - the default starts only `studio`; use `docker compose --profile bundled up --build` for the bundled model container
 - if Docker Hub access is flaky in your environment, you can point `INDEXTTS_CUDA_BASE_IMAGE` to a mirrored CUDA base image
+- `INDEXTTS_UPSTREAM_DOCKER_BIND_HOST` and `INDEXTTS_UPSTREAM_DOCKER_PORT` control how the bundled `index-tts` container is published on the host; keep `127.0.0.1` for local-only use, or switch to `0.0.0.0` / a VPN-bound address when a remote Studio server needs to reach it
 
 The containerized default uses `remote_gradio` and targets the host gateway:
 
@@ -183,6 +187,8 @@ Docker-specific overrides also live in the same `.env`, for example:
 - `INDEXTTS_STUDIO_DOCKER_PORT`
 - `INDEXTTS_STUDIO_DOCKER_WARMUP_ON_STARTUP`
 - `INDEXTTS_STUDIO_DOCKER_GRADIO_BASE_URL`
+- `INDEXTTS_UPSTREAM_DOCKER_BIND_HOST`
+- `INDEXTTS_UPSTREAM_DOCKER_PORT`
 - `INDEXTTS_CUDA_BASE_IMAGE`
 - `HF_TOKEN`
 
@@ -321,11 +327,19 @@ INDEXTTS_STUDIO_GRADIO_BASE_URL=http://<reachable-local-host>:7861
 INDEXTTS_STUDIO_AUTH_ENABLED=true
 ```
 
+Typical GPU-host settings for the bundled local `index-tts` container:
+
+```text
+INDEXTTS_UPSTREAM_DOCKER_BIND_HOST=0.0.0.0
+INDEXTTS_UPSTREAM_DOCKER_PORT=7861
+```
+
 Safer deployment choices:
 
 - use `Tailscale`, `WireGuard`, or another private network so the server can reach your local `7861`
 - put `studio` behind a reverse proxy such as `Nginx` or `Caddy`
 - enable HTTPS and set `INDEXTTS_STUDIO_AUTH_SECURE_COOKIE=true`
+- restrict `7861` with your firewall or bind it to a private/VPN address instead of exposing it broadly on the public internet
 
 Important caveats:
 
