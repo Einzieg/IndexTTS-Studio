@@ -97,7 +97,7 @@ type LocalRowsDraft = {
 
 const LEGACY_DRAFT_PREFIX = "indextts-studio:episode-draft";
 const BATCH_SYNC_PREFIX = "indextts-studio:batch-sync";
-const MAX_DIALOGUE_LINE_CHARS = 120;
+const DEFAULT_DIALOGUE_LINE_CHARS = 60;
 const STRONG_BREAK_CHARS = new Set(["。", "！", "？", "!", "?", "；", ";", "…"]);
 const SOFT_BREAK_CHARS = new Set(["，", ",", "、", "：", ":"]);
 const CLOSING_PUNCTUATION = new Set(["”", "’", "\"", "'", "）", ")", "】", "]", "》", "」", "』"]);
@@ -224,7 +224,7 @@ function splitByBreaks(value: string, breakChars: Set<string>): string[] {
   return segments.length > 0 ? segments : [value.trim()];
 }
 
-function hardSplitLine(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+function hardSplitLine(value: string, maxLength = DEFAULT_DIALOGUE_LINE_CHARS): string[] {
   const chars = Array.from(value);
   const chunks: string[] = [];
   for (let index = 0; index < chars.length; index += maxLength) {
@@ -236,7 +236,7 @@ function hardSplitLine(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): stri
   return chunks;
 }
 
-function packDialogueSegments(segments: string[], maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+function packDialogueSegments(segments: string[], maxLength = DEFAULT_DIALOGUE_LINE_CHARS): string[] {
   const lines: string[] = [];
   let current = "";
 
@@ -268,7 +268,7 @@ function packDialogueSegments(segments: string[], maxLength = MAX_DIALOGUE_LINE_
   return lines;
 }
 
-function splitDialogueParagraph(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+function splitDialogueParagraph(value: string, maxLength = DEFAULT_DIALOGUE_LINE_CHARS): string[] {
   if (textLength(value) <= maxLength) {
     return [value];
   }
@@ -285,7 +285,7 @@ function splitDialogueParagraph(value: string, maxLength = MAX_DIALOGUE_LINE_CHA
   );
 }
 
-function splitDialogueText(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): string[] {
+function splitDialogueText(value: string, maxLength = DEFAULT_DIALOGUE_LINE_CHARS): string[] {
   return value
     .replace(/\r\n?/g, "\n")
     .split("\n")
@@ -294,8 +294,11 @@ function splitDialogueText(value: string, maxLength = MAX_DIALOGUE_LINE_CHARS): 
     .flatMap((paragraph) => splitDialogueParagraph(paragraph, maxLength));
 }
 
-function tooLongDialogueMessage(length: number): string {
-  return `单行台词最多 ${MAX_DIALOGUE_LINE_CHARS} 字，当前 ${length} 字。请先使用智能分行。`;
+function tooLongDialogueMessage(
+  length: number,
+  maxLength = DEFAULT_DIALOGUE_LINE_CHARS,
+): string {
+  return `单行台词最多 ${maxLength} 字，当前 ${length} 字。请先使用智能分行。`;
 }
 
 function createEmptyRow(defaultSpeaker: string, index: number): StudioRow {
@@ -384,6 +387,19 @@ function resolveDownloadFilename(disposition: string | null, fallback: string): 
   }
   const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
   return plainMatch?.[1] ?? fallback;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 30_000);
 }
 
 function legacyDraftStorageKey(projectId: string, episodeId: string): string {
@@ -476,12 +492,16 @@ function buildEpisodeOptions(project: ProjectConfig | null): Array<{ id: string;
 export function StudioPage(props: {
   project: ProjectConfig | null;
   activeEpisodeId: string;
+  lineTextLimit: number;
   speakers: SpeakerProfile[];
   setNotice: (notice: Notice) => void;
   onLatestResult: (result: SingleResult) => void;
   onJobQueued: (jobId: string) => Promise<void> | void;
 }) {
   const activeProjectId = props.project?.id ?? "";
+  const maxDialogueLineChars = Number.isFinite(props.lineTextLimit)
+    ? Math.max(1, Math.floor(props.lineTextLimit))
+    : DEFAULT_DIALOGUE_LINE_CHARS;
   const speakerNames = props.speakers.map((speaker) => speaker.name);
   const firstSpeaker = speakerNames[0] ?? "";
   const episodeOptions = useMemo(() => buildEpisodeOptions(props.project), [props.project]);
@@ -757,7 +777,8 @@ export function StudioPage(props: {
         continue;
       }
 
-      const segments = segmentOverrides?.get(row.rowId) ?? splitDialogueText(row.text);
+      const segments =
+        segmentOverrides?.get(row.rowId) ?? splitDialogueText(row.text, maxDialogueLineChars);
       if (segments.length <= 1) {
         nextRows.push(row);
         continue;
@@ -814,8 +835,8 @@ export function StudioPage(props: {
     const selectionEnd = target.selectionEnd ?? target.value.length;
     const mergedText =
       target.value.slice(0, selectionStart) + pastedText + target.value.slice(selectionEnd);
-    const segments = splitDialogueText(mergedText);
-    if (segments.length <= 1 && textLength(mergedText.trim()) <= MAX_DIALOGUE_LINE_CHARS) {
+    const segments = splitDialogueText(mergedText, maxDialogueLineChars);
+    if (segments.length <= 1 && textLength(mergedText.trim()) <= maxDialogueLineChars) {
       return;
     }
 
@@ -888,6 +909,7 @@ export function StudioPage(props: {
     try {
       const response = await fetch(
         `/scripts/table/export?project_id=${encodeURIComponent(activeProjectId)}&episode_id=${encodeURIComponent(props.activeEpisodeId)}`,
+        { credentials: "same-origin" },
       );
       if (!response.ok) {
         let message = "导出失败。";
@@ -907,14 +929,7 @@ export function StudioPage(props: {
         response.headers.get("Content-Disposition"),
         `项目-${props.project.name}-分集-${props.activeEpisodeId}-导出.zip`,
       );
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(downloadUrl);
+      downloadBlob(blob, downloadName);
 
       const exportedCount = Number(response.headers.get("X-Exported-Count") ?? exportableRowCount);
       props.setNotice({
@@ -982,8 +997,11 @@ export function StudioPage(props: {
 
       const cleanText = row.text.trim();
       const cleanTextLength = textLength(cleanText);
-      if (cleanTextLength > MAX_DIALOGUE_LINE_CHARS) {
-        failedRows.push({ rowId: row.rowId, error: tooLongDialogueMessage(cleanTextLength) });
+      if (cleanTextLength > maxDialogueLineChars) {
+        failedRows.push({
+          rowId: row.rowId,
+          error: tooLongDialogueMessage(cleanTextLength, maxDialogueLineChars),
+        });
         continue;
       }
 
@@ -1306,7 +1324,7 @@ export function StudioPage(props: {
 
         const cleanText = row.text.trim();
         const cleanTextLength = textLength(cleanText);
-        if (cleanTextLength > MAX_DIALOGUE_LINE_CHARS) {
+        if (cleanTextLength > maxDialogueLineChars) {
           failed += 1;
           setRows((current) =>
             current.map((item) =>
@@ -1314,7 +1332,7 @@ export function StudioPage(props: {
                 ? {
                     ...item,
                     lastStatus: "failed",
-                    lastError: tooLongDialogueMessage(cleanTextLength),
+                    lastError: tooLongDialogueMessage(cleanTextLength, maxDialogueLineChars),
                   }
                 : item,
             ),
@@ -1753,7 +1771,7 @@ export function StudioPage(props: {
               </div>
             </div>
             <div className="mt-3 text-xs leading-6 text-slate-500">
-              单行台词上限 {MAX_DIALOGUE_LINE_CHARS} 字。粘贴长段落或多行文本时会自动按标点拆成多行，生成前仍会拦截超长单行。
+              单行台词上限 {maxDialogueLineChars} 字。粘贴长段落或多行文本时会自动按标点拆成多行，生成前仍会拦截超长单行。
             </div>
           </div>
 
@@ -1782,7 +1800,7 @@ export function StudioPage(props: {
                     {rows.map((row, index) => {
                       const selectedRender = selectedRenderForRow(row);
                       const rowTextLength = textLength(row.text.trim());
-                      const isRowTextTooLong = rowTextLength > MAX_DIALOGUE_LINE_CHARS;
+                      const isRowTextTooLong = rowTextLength > maxDialogueLineChars;
                       return (
                         <tr key={row.rowId} className="border-t border-white/70 align-top transition-colors hover:bg-slate-50/70">
                           <td className="px-4 py-4">
@@ -1809,7 +1827,7 @@ export function StudioPage(props: {
                               value={row.text}
                             />
                             <div className={`mt-2 text-xs ${isRowTextTooLong ? "text-rose-600" : "text-slate-400"}`}>
-                              {rowTextLength}/{MAX_DIALOGUE_LINE_CHARS} 字 · 当前详细参数 {Object.keys(row.override || {}).length} 项
+                              {rowTextLength}/{maxDialogueLineChars} 字 · 当前详细参数 {Object.keys(row.override || {}).length} 项
                             </div>
                           </td>
                           <td className="min-w-[180px] px-4 py-4">

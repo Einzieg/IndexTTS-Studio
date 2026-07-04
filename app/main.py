@@ -92,7 +92,9 @@ def create_app(container: ServiceContainer | None = None) -> FastAPI:
         return api_response(
             success=True,
             message="服务运行正常。",
-            data=HealthStatus(),
+            data=HealthStatus(
+                max_script_line_text_chars=active_container.settings.max_script_line_text_chars,
+            ),
         )
 
     @app.get("/", include_in_schema=False)

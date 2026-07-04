@@ -15,7 +15,6 @@ from app.domain.models import (
     BatchReport,
     JobLineRecord,
     JobRecord,
-    MAX_SCRIPT_LINE_TEXT_CHARS,
     ScriptLine,
     SynthesisResult,
 )
@@ -212,14 +211,14 @@ class JobService:
     def get_job_lines(self, job_id: str) -> list[JobLineRecord]:
         return self.get_job(job_id).lines
 
-    @staticmethod
-    def _validate_line_text_lengths(lines: list[ScriptLine]) -> None:
+    def _validate_line_text_lengths(self, lines: list[ScriptLine]) -> None:
+        max_line_chars = self.storage.settings.max_script_line_text_chars
         for line in lines:
             text_length = len(line.text.strip())
-            if text_length > MAX_SCRIPT_LINE_TEXT_CHARS:
+            if text_length > max_line_chars:
                 raise ValidationError(
                     f"第 `{line.id}` 行台词长度为 {text_length} 字，超过单行上限 "
-                    f"{MAX_SCRIPT_LINE_TEXT_CHARS} 字，请先拆分后再生成。"
+                    f"{max_line_chars} 字，请先拆分后再生成。"
                 )
 
     def queue_size(self) -> int:

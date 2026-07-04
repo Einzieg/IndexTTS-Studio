@@ -16,6 +16,7 @@ CONFIG_ENV_KEYS = [
     "INDEXTTS_STUDIO_BACKEND",
     "INDEXTTS_STUDIO_GRADIO_BASE_URL",
     "INDEXTTS_STUDIO_PORT",
+    "INDEXTTS_STUDIO_MAX_SCRIPT_LINE_TEXT_CHARS",
     "INDEXTTS_STUDIO_AUTH_ENABLED",
     "INDEXTTS_STUDIO_AUTH_USERNAME",
     "INDEXTTS_STUDIO_AUTH_PASSWORD",
@@ -36,6 +37,7 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
                 "INDEXTTS_STUDIO_BACKEND=mock",
                 "INDEXTTS_STUDIO_GRADIO_BASE_URL=http://127.0.0.1:9999",
                 "INDEXTTS_STUDIO_PORT=8123",
+                "INDEXTTS_STUDIO_MAX_SCRIPT_LINE_TEXT_CHARS=42",
                 "INDEXTTS_STUDIO_AUTH_ENABLED=true",
                 "INDEXTTS_STUDIO_AUTH_USERNAME=tester",
                 "INDEXTTS_STUDIO_AUTH_PASSWORD=secret123",
@@ -56,6 +58,7 @@ def test_load_settings_from_dotenv_file(monkeypatch, tmp_path) -> None:
     assert settings.model.backend == "mock"
     assert settings.model.gradio_base_url == "http://127.0.0.1:9999"
     assert settings.api.port == 8123
+    assert settings.max_script_line_text_chars == 42
     assert settings.auth.enabled is True
     assert settings.auth.username == "tester"
     assert settings.auth.password == "secret123"
@@ -99,5 +102,6 @@ def test_blank_child_paths_follow_data_dir_and_blank_auth_secret_is_random(
     assert settings.paths.outputs_dir == data_dir / "outputs"
     assert settings.paths.logs_dir == data_dir / "logs"
     assert settings.paths.jobs_dir == data_dir / "jobs"
+    assert settings.max_script_line_text_chars == 60
     assert settings.auth.session_secret == "generated-secret-one"
     assert second_settings.auth.session_secret == "generated-secret-two"

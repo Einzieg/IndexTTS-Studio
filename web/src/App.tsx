@@ -46,6 +46,7 @@ import type {
 
 const PROJECT_STORAGE_KEY = "indextts-studio:selected-project";
 const EPISODE_STORAGE_PREFIX = "indextts-studio:selected-episode";
+const AUTH_SESSION_TIMEOUT_MS = 8000;
 
 type NavItem = {
   id: StudioPageId;
@@ -187,22 +188,23 @@ export default function App() {
 
   const loadAuthSession = useEffectEvent(async () => {
     setIsAuthChecking(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), AUTH_SESSION_TIMEOUT_MS);
     try {
-      const payload = await requestJson<AuthSessionPayload>("/auth/session");
-      startTransition(() => {
-        setAuthSession(payload);
-        setLoginError(null);
+      const payload = await requestJson<AuthSessionPayload>("/auth/session", {
+        signal: controller.signal,
       });
+      setAuthSession(payload);
+      setLoginError(null);
     } catch (error) {
-      startTransition(() => {
-        setAuthSession({ enabled: false, authenticated: true, username: null });
-        setLoginError(null);
-      });
+      setAuthSession({ enabled: true, authenticated: false, username: null });
+      setLoginError(error instanceof Error ? error.message : "加载登录状态失败。");
       setNotice({
         tone: "error",
         message: error instanceof Error ? error.message : "加载登录状态失败。",
       });
     } finally {
+      window.clearTimeout(timeoutId);
       setIsAuthChecking(false);
     }
   });
@@ -215,14 +217,12 @@ export default function App() {
 
   useEffect(() => {
     const handleAuthRequired = () => {
-      startTransition(() => {
-        setAuthSession((current) => ({
-          enabled: current?.enabled ?? true,
-          authenticated: false,
-          username: null,
-        }));
-        setLoginError("登录已失效，请重新登录。");
-      });
+      setAuthSession((current) => ({
+        enabled: current?.enabled ?? true,
+        authenticated: false,
+        username: null,
+      }));
+      setLoginError("登录已失效，请重新登录。");
     };
     window.addEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
     return () => window.removeEventListener(AUTH_REQUIRED_EVENT, handleAuthRequired);
@@ -275,7 +275,7 @@ export default function App() {
   const loadSpeakersForProject = useEffectEvent(async (projectId: string) => {
     const requestId = ++speakerRequestId.current;
     if (!projectId) {
-      startTransition(() => setSpeakers([]));
+      setSpeakers([]);
       return;
     }
 
@@ -286,12 +286,12 @@ export default function App() {
       if (requestId !== speakerRequestId.current) {
         return;
       }
-      startTransition(() => setSpeakers(speakerData.items));
+      setSpeakers(speakerData.items);
     } catch (error) {
       if (requestId !== speakerRequestId.current || error instanceof UnauthorizedError) {
         return;
       }
-      startTransition(() => setSpeakers([]));
+      setSpeakers([]);
       setNotice({
         tone: "error",
         message: error instanceof Error ? error.message : "加载角色数据失败。",
@@ -328,29 +328,27 @@ export default function App() {
           ? (effectiveProject?.episodes.find((episode) => episode.id === options.episodeId)?.id ?? "")
           : undefined;
 
-      startTransition(() => {
-        setProjects(projectData.items);
-        setSelectedProjectId((currentProjectId) => {
-          if (options?.projectId !== undefined) {
-            return effectiveProjectId;
-          }
-          if (projectData.items.some((item) => item.id === currentProjectId)) {
-            return currentProjectId;
-          }
+      setProjects(projectData.items);
+      setSelectedProjectId((currentProjectId) => {
+        if (options?.projectId !== undefined) {
           return effectiveProjectId;
-        });
-        if (effectiveEpisodeId !== undefined) {
-          setSelectedEpisodeId(effectiveEpisodeId);
         }
-        setJobs(jobData.items);
-
-        if (!selectedJobId && jobData.items[0]) {
-          setSelectedJobId(jobData.items[0].job_id);
+        if (projectData.items.some((item) => item.id === currentProjectId)) {
+          return currentProjectId;
         }
-        if (selectedJobId && !jobData.items.some((item) => item.job_id === selectedJobId)) {
-          setSelectedJobId(jobData.items[0]?.job_id ?? null);
-        }
+        return effectiveProjectId;
       });
+      if (effectiveEpisodeId !== undefined) {
+        setSelectedEpisodeId(effectiveEpisodeId);
+      }
+      setJobs(jobData.items);
+
+      if (!selectedJobId && jobData.items[0]) {
+        setSelectedJobId(jobData.items[0].job_id);
+      }
+      if (selectedJobId && !jobData.items.some((item) => item.job_id === selectedJobId)) {
+        setSelectedJobId(jobData.items[0]?.job_id ?? null);
+      }
 
       if (options?.includeSpeakers) {
         await loadSpeakersForProject(effectiveProjectId);
@@ -359,7 +357,7 @@ export default function App() {
       if (error instanceof UnauthorizedError) {
         return;
       }
-      setHealth((current) => current ?? { status: "offline" });
+      setHealth((current) => current ?? { status: "offline", max_script_line_text_chars: 60 });
       setNotice({
         tone: "error",
         message: error instanceof Error ? error.message : "刷新概览失败。",
@@ -381,7 +379,7 @@ export default function App() {
       if (requestId !== jobLinesRequestId.current || jobId !== selectedJobId) {
         return;
       }
-      startTransition(() => setJobLines(payload.items));
+      setJobLines(payload.items);
     } catch (error) {
       if (error instanceof UnauthorizedError) {
         return;
@@ -473,10 +471,8 @@ export default function App() {
       if (!response.ok || !payload.success) {
         throw new Error(payload.message || "登录失败。");
       }
-      startTransition(() => {
-        setAuthSession(payload.data);
-        setLoginError(null);
-      });
+      setAuthSession(payload.data);
+      setLoginError(null);
       setNotice({
         tone: "success",
         message: payload.data.username ? `欢迎回来，${payload.data.username}。` : "登录成功。",
@@ -497,14 +493,12 @@ export default function App() {
         credentials: "same-origin",
       });
     } finally {
-      startTransition(() => {
-        setAuthSession((current) => ({
-          enabled: current?.enabled ?? true,
-          authenticated: false,
-          username: null,
-        }));
-        setLoginError(null);
-      });
+      setAuthSession((current) => ({
+        enabled: current?.enabled ?? true,
+        authenticated: false,
+        username: null,
+      }));
+      setLoginError(null);
       setNotice({
         tone: "info",
         message: "已退出登录。",
@@ -750,6 +744,7 @@ export default function App() {
             {page === "studio" ? (
               <StudioPage
                 activeEpisodeId={selectedEpisodeId}
+                lineTextLimit={health?.max_script_line_text_chars ?? 60}
                 onJobQueued={handleJobQueued}
                 onLatestResult={setSingleResult}
                 project={activeProject}

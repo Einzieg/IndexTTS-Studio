@@ -16,6 +16,10 @@ def test_api_endpoints(container: ServiceContainer) -> None:
         health_response = client.get("/health")
         assert health_response.status_code == 200
         assert health_response.json()["data"]["status"] == "ok"
+        assert (
+            health_response.json()["data"]["max_script_line_text_chars"]
+            == container.settings.max_script_line_text_chars
+        )
 
         speakers_response = client.get("/speakers")
         assert speakers_response.status_code == 200
@@ -71,3 +75,25 @@ def test_single_tts_rejects_overlong_text(container: ServiceContainer) -> None:
         assert response.status_code == 422
         assert response.json()["success"] is False
         assert f"单行台词最多 {MAX_SCRIPT_LINE_TEXT_CHARS} 字" in response.json()["message"]
+
+
+def test_single_tts_uses_configured_line_limit(container: ServiceContainer) -> None:
+    container.settings.max_script_line_text_chars = 5
+
+    with TestClient(create_app(container)) as client:
+        health_response = client.get("/health")
+        response = client.post(
+            "/tts/single",
+            json={
+                "speaker": "主角A",
+                "text": "长" * 6,
+                "output_name": "too_long_custom.wav",
+                "force": True,
+            },
+        )
+
+        assert health_response.status_code == 200
+        assert health_response.json()["data"]["max_script_line_text_chars"] == 5
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "单行台词最多 5 字" in response.json()["message"]

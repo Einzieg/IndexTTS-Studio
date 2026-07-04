@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from app.core.config import AppSettings
 from app.core.exceptions import OutputNameCollisionError, ValidationError
-from app.domain.models import MAX_SCRIPT_LINE_TEXT_CHARS, ScriptLine, SpeakerProfile, SynthesisResult
+from app.domain.models import ScriptLine, SpeakerProfile, SynthesisResult
 from app.infra.indextts_adapter import TTSAdapter
 from app.infra.storage import StorageService
 from app.services.project_service import ProjectService
@@ -130,9 +130,10 @@ class TTSService:
         clean_text = text.strip()
         if not clean_text:
             raise ValidationError("Text must not be empty.")
-        if len(clean_text) > MAX_SCRIPT_LINE_TEXT_CHARS:
+        max_line_chars = self.settings.max_script_line_text_chars
+        if len(clean_text) > max_line_chars:
             raise ValidationError(
-                f"单行台词最多 {MAX_SCRIPT_LINE_TEXT_CHARS} 字，请先拆分后再生成。"
+                f"单行台词最多 {max_line_chars} 字，请先拆分后再生成。"
             )
 
         if output_path.exists() and not force:

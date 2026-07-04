@@ -71,6 +71,30 @@ def test_inline_job_api_rejects_overlong_line(container: ServiceContainer) -> No
         assert f"超过单行上限 {MAX_SCRIPT_LINE_TEXT_CHARS} 字" in response.json()["message"]
 
 
+def test_inline_job_api_uses_configured_line_limit(container: ServiceContainer) -> None:
+    container.settings.max_script_line_text_chars = 5
+
+    with TestClient(create_app(container)) as client:
+        response = client.post(
+            "/jobs/from-lines",
+            json={
+                "title": "自定义超长台词",
+                "force": True,
+                "lines": [
+                    {
+                        "speaker": "主角A",
+                        "text": "长" * 6,
+                        "scene": "web",
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["success"] is False
+        assert "超过单行上限 5 字" in response.json()["message"]
+
+
 def test_inline_job_api_respects_project_and_episode_context(
     container: ServiceContainer,
 ) -> None:

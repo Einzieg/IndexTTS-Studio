@@ -11,7 +11,7 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-MAX_SCRIPT_LINE_TEXT_CHARS = 120
+MAX_SCRIPT_LINE_TEXT_CHARS = 60
 
 
 class GenerationOptions(BaseModel):
@@ -244,3 +244,4 @@ class StudioTableRecord(BaseModel):
 
 class HealthStatus(BaseModel):
     status: str = "ok"
+    max_script_line_text_chars: int = MAX_SCRIPT_LINE_TEXT_CHARS

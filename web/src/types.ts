@@ -31,6 +31,7 @@ export type GenerationOptions = {
 
 export type HealthPayload = {
   status: string;
+  max_script_line_text_chars: number;
 };
 
 export type AuthSessionPayload = {

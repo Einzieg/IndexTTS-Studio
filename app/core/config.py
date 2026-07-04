@@ -156,6 +156,7 @@ class AppSettings:
     auth: AuthSettings = field(default_factory=AuthSettings)
     generation: GenerationDefaults = field(default_factory=GenerationDefaults)
     model: ModelSettings = field(default_factory=ModelSettings)
+    max_script_line_text_chars: int = 60
     log_level: str = "INFO"
     env_file: Path = LOADED_ENV_FILE
 
@@ -314,6 +315,10 @@ def load_settings() -> AppSettings:
         api=api,
         auth=auth,
         model=model,
+        max_script_line_text_chars=max(
+            1,
+            _parse_int(os.getenv("INDEXTTS_STUDIO_MAX_SCRIPT_LINE_TEXT_CHARS"), 60),
+        ),
         log_level=os.getenv("INDEXTTS_STUDIO_LOG_LEVEL", "INFO").upper(),
         env_file=env_file,
     )
